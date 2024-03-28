@@ -107,7 +107,7 @@ impl LogWriter {
     const BUFFER_CAPACITY: usize = 1024;
 }
 /// If a writer is closed. Old path and roller pattern may still be retrieved.
-struct LogFile {
+pub struct LogFile {
     writer: Option<LogWriter>,
     path: PathBuf,
     roller_pattern: String,
@@ -310,7 +310,8 @@ impl RollingFileAppenderBuilder {
         // TODO: time format?
         policy: Box<dyn policy::Policy>,
     ) -> anyhow::Result<RollingFileAppender> {
-        let pattern = super::env_util::expand_env_vars(appender_pattern.clone()).to_string();
+        let appender_pattern =
+            super::env_util::expand_env_vars(appender_pattern.clone()).to_string();
 
         let appender = RollingFileAppender {
             log_file: Mutex::new(LogFile::new(
@@ -323,7 +324,7 @@ impl RollingFileAppenderBuilder {
                 .encoder
                 .unwrap_or_else(|| Box::<PatternEncoder>::default()),
             policy,
-            appender_pattern: pattern,
+            appender_pattern,
             base_count: self.base_count,
         };
 
