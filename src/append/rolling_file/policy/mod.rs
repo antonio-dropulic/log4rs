@@ -1,10 +1,10 @@
 //! Policies.
 use std::fmt;
 
-use crate::append::rolling_file::LogFile;
-
 #[cfg(feature = "config_parsing")]
 use crate::config::Deserializable;
+
+use super::LogFile;
 
 #[cfg(feature = "compound_policy")]
 pub mod compound;

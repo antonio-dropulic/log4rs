@@ -22,7 +22,7 @@ pub struct DeleteRollerConfig {
 pub struct DeleteRoller(());
 
 impl Roll for DeleteRoller {
-    fn roll(&self, file: &Path) -> anyhow::Result<()> {
+    fn roll(&self, file: &Path, _pattern: &str) -> anyhow::Result<()> {
         fs::remove_file(file).map_err(Into::into)
     }
 }
