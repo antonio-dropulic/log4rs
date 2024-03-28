@@ -264,6 +264,7 @@ impl RollingFileAppender {
         RollingFileAppenderBuilder {
             append: true,
             encoder: None,
+            base_count: 0,
         }
     }
 }
@@ -272,6 +273,7 @@ impl RollingFileAppender {
 pub struct RollingFileAppenderBuilder {
     append: bool,
     encoder: Option<Box<dyn Encode>>,
+    base_count: u32,
 }
 
 impl RollingFileAppenderBuilder {
@@ -291,6 +293,11 @@ impl RollingFileAppenderBuilder {
         self
     }
 
+    pub fn base(mut self, base_count: u32) -> RollingFileAppenderBuilder {
+        self.base_count = base_count;
+        self
+    }
+
     /// Constructs a `RollingFileAppender`.
     /// The path argument can contain environment variables of the form $ENV{name_here},
     /// where 'name_here' will be the name of the environment variable that
@@ -300,22 +307,24 @@ impl RollingFileAppenderBuilder {
         self,
         //TODO: better doc path pattern, but be convertible to a real path
         appender_pattern: String,
-        // TODO: +1 should be passed to the rolling file appender?
-        base_count: u32,
         // TODO: time format?
         policy: Box<dyn policy::Policy>,
     ) -> anyhow::Result<RollingFileAppender> {
         let pattern = super::env_util::expand_env_vars(appender_pattern.clone()).to_string();
 
         let appender = RollingFileAppender {
-            log_file: Mutex::new(LogFile::new(self.append, &appender_pattern, base_count)?),
+            log_file: Mutex::new(LogFile::new(
+                self.append,
+                &appender_pattern,
+                self.base_count,
+            )?),
             append: self.append,
             encoder: self
                 .encoder
                 .unwrap_or_else(|| Box::<PatternEncoder>::default()),
             policy,
             appender_pattern: pattern,
-            base_count,
+            base_count: self.base_count,
         };
 
         let mut log_file_guard = appender.log_file.lock();
@@ -399,7 +408,7 @@ impl Deserialize for RollingFileAppenderDeserializer {
 
         let policy = deserializers.deserialize(&config.policy.kind, config.policy.config)?;
         // TODO: Extend appender config
-        let appender = builder.build(config.path, 0, policy)?;
+        let appender = builder.build(config.path, policy)?;
         Ok(Box::new(appender))
     }
 }
