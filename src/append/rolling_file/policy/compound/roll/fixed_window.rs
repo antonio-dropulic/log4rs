@@ -27,7 +27,7 @@ pub struct FixedWindowRollerConfig {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-enum Compression {
+pub enum Compression {
     None,
     #[cfg(feature = "gzip")]
     Gzip,
