@@ -10,6 +10,7 @@ use mock_instant::{SystemTime, UNIX_EPOCH};
 use rand::Rng;
 #[cfg(feature = "config_parsing")]
 use serde::de;
+use serde::Serialize;
 #[cfg(feature = "config_parsing")]
 use std::fmt;
 use std::sync::RwLock;
@@ -49,7 +50,7 @@ pub struct TimeTrigger {
 /// The TimeTrigger supports the following units (case insensitive):
 /// "second", "seconds", "minute", "minutes", "hour", "hours", "day", "days", "week", "weeks", "month", "months", "year", "years". The unit defaults to
 /// second if not specified.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize)]
 pub enum TimeTriggerInterval {
     /// TimeTriger in second(s).
     Second(i64),
