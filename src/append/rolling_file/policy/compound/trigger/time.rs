@@ -24,10 +24,13 @@ use crate::config::{Deserialize, Deserializers};
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimeTriggerConfig {
+    /// Trigger interval
     pub interval: TimeTriggerInterval,
     #[serde(default)]
+    /// TODO:
     pub modulate: bool,
     #[serde(default)]
+    /// TODO:
     pub max_random_delay: u64,
 }
 

@@ -44,6 +44,11 @@ use crate::encode::EncoderConfig;
 
 pub mod policy;
 
+/// Pattern used to replace DateTime in the logfile path
+pub const TIME_PATTERN: &str = "{TIME}";
+/// Pattern used to replace rolling log count
+pub const COUNT_PATTERN: &str = "{}";
+
 /// Configuration for the rolling file appender.
 #[cfg(feature = "config_parsing")]
 #[derive(Clone, Eq, PartialEq, Hash, Debug, serde::Deserialize)]
@@ -115,16 +120,15 @@ pub struct LogFile {
 }
 
 impl LogFile {
-    pub fn new(append: bool, appender_pattern: &str, base_count: u32) -> anyhow::Result<Self> {
+    fn new(append: bool, appender_pattern: &str, base_count: u32) -> anyhow::Result<Self> {
         let roller_pattern = appender_pattern.replace(
-            RollingFileAppender::TIME_PATTERN,
+            TIME_PATTERN,
             &chrono::Utc::now()
                 .format(RollingFileAppender::DATE_FORMAT_STR)
                 .to_string(),
         );
 
-        let file_name =
-            roller_pattern.replace(RollingFileAppender::COUNT_PATTERN, &base_count.to_string());
+        let file_name = roller_pattern.replace(COUNT_PATTERN, &base_count.to_string());
 
         let path = PathBuf::from_str(&file_name)
             .context(format!("Invalid log file path: {}", file_name))?;
@@ -165,7 +169,7 @@ impl LogFile {
     pub fn close_writer(&mut self) {
         self.writer = None;
     }
-    pub fn get_or_init_writer(
+    fn get_or_init_writer(
         &mut self,
         append: bool,
         appender_pattern: &str,
@@ -191,12 +195,10 @@ impl LogFile {
     /// and adding the number of bytes written. It may be inaccurate if any
     /// writes have failed or if another process has modified the file
     /// concurrently.
+    #[allow(clippy::len_without_is_empty)]
     #[deprecated(since = "0.9.1", note = "Please use the len_estimate function instead")]
     pub fn len(&self) -> u64 {
-        self.writer
-            .as_ref()
-            .and_then(|writer| Some(writer.len))
-            .unwrap_or(0)
+        self.writer.as_ref().map(|writer| writer.len).unwrap_or(0)
     }
 
     /// Returns an estimate of the log file's current size.
@@ -206,10 +208,7 @@ impl LogFile {
     /// writes have failed or if another process has modified the file
     /// concurrently.
     pub fn len_estimate(&self) -> u64 {
-        self.writer
-            .as_ref()
-            .and_then(|writer| Some(writer.len))
-            .unwrap_or(0)
+        self.writer.as_ref().map(|writer| writer.len).unwrap_or(0)
     }
 }
 
@@ -262,10 +261,8 @@ impl Append for RollingFileAppender {
 }
 
 impl RollingFileAppender {
-    pub const TIME_PATTERN: &'static str = "{TIME}";
-    pub const COUNT_PATTERN: &'static str = "{}";
-    // TODO: should be configurable
-    const DATE_FORMAT_STR: &'static str = "%Y-%m-%d-%H:%M";
+    // TODO: USER SHOULD INJECT DATE FORMAT OR ATLEAST SELECT IT
+    const DATE_FORMAT_STR: &'static str = "%Y-%m-%d-%H:%M:%S";
 
     /// Creates a new `RollingFileAppenderBuilder`.
     pub fn builder() -> RollingFileAppenderBuilder {
@@ -301,6 +298,9 @@ impl RollingFileAppenderBuilder {
         self
     }
 
+    /// Value used to replace [COUNT_PATTERN] in the file path.
+    ///
+    /// Defaults to 0.
     pub fn base(mut self, base_count: u32) -> RollingFileAppenderBuilder {
         self.base_count = base_count;
         self
@@ -338,6 +338,8 @@ impl RollingFileAppenderBuilder {
 
         let mut log_file_guard = appender.log_file.lock();
 
+        // TODO: No need to create a writer here?
+        // TODO: check after tests in place. Should be safe to remove
         log_file_guard.get_or_init_writer(
             appender.append,
             &appender.appender_pattern,

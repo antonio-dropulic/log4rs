@@ -2,7 +2,6 @@
 //!
 //! Requires the `fixed_window_roller` feature.
 
-use anyhow::bail;
 #[cfg(feature = "background_rotation")]
 use parking_lot::{Condvar, Mutex};
 #[cfg(feature = "background_rotation")]
@@ -26,8 +25,10 @@ pub struct FixedWindowRollerConfig {
     count: u32,
 }
 
+/// Kind of compression used for rolled logs
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Compression {
+    /// No compression
     None,
     #[cfg(feature = "gzip")]
     Gzip,
