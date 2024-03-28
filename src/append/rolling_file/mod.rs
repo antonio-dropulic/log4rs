@@ -16,6 +16,7 @@
 //!
 //! Requires the `rolling_file_appender` feature.
 
+use anyhow::Context;
 use derivative::Derivative;
 use log::Record;
 use parking_lot::Mutex;
@@ -125,14 +126,21 @@ impl LogFile {
         let file_name =
             roller_pattern.replace(RollingFileAppender::COUNT_PATTERN, &base_count.to_string());
 
-        let path = PathBuf::from_str(&file_name)?;
+        let path = PathBuf::from_str(&file_name)
+            .context(format!("Invalid log file path: {}", file_name))?;
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .context(format!("Cant create log file parent: {}", file_name))?;
+        }
 
         let file = OpenOptions::new()
             .write(true)
             .append(append)
             .truncate(!append)
             .create(true)
-            .open(&path)?;
+            .open(&path)
+            .context(format!("Can't open log file {}", file_name))?;
 
         let len = if append { file.metadata()?.len() } else { 0 };
 
@@ -335,10 +343,6 @@ impl RollingFileAppenderBuilder {
             &appender.appender_pattern,
             appender.base_count,
         )?;
-
-        if let Some(parent) = log_file_guard.path().parent() {
-            fs::create_dir_all(parent)?;
-        }
 
         drop(log_file_guard);
 
