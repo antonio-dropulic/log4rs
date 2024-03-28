@@ -199,16 +199,16 @@ fn rotate(
     file: PathBuf,
 ) -> io::Result<()> {
     // TODO: Use COUNT_PATTERN CONSTANT
-    let dst_0 = expand_env_vars(pattern.replace("{}", &base.to_string()));
+    let base_rolled_log = expand_env_vars(pattern.replace("{}", &base.to_string()));
 
-    if let Some(parent) = Path::new(dst_0.as_ref()).parent() {
+    if let Some(parent) = Path::new(base_rolled_log.as_ref()).parent() {
         fs::create_dir_all(parent)?;
     }
 
     // In the common case, all of the archived files will be in the same
     // directory, so avoid extra filesystem calls in that case.
     let parent_varies = match (
-        Path::new(dst_0.as_ref()).parent(),
+        Path::new(base_rolled_log.as_ref()).parent(),
         Path::new(expand_env_vars(pattern).as_ref()).parent(),
     ) {
         (Some(a), Some(b)) => a != b,
@@ -228,8 +228,8 @@ fn rotate(
         move_file(src.as_ref(), dst.as_ref())?;
     }
 
-    compression.compress(&file, &dst_0).map_err(|e| {
-        println!("err compressing: {:?}, dst: {:?}", file, dst_0);
+    compression.compress(&file, &base_rolled_log).map_err(|e| {
+        println!("err compressing: {:?}, dst: {:?}", file, base_rolled_log);
         e
     })?;
     Ok(())
