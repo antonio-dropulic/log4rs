@@ -7,11 +7,17 @@ use parking_lot::{Condvar, Mutex};
 #[cfg(feature = "background_rotation")]
 use std::sync::Arc;
 use std::{
+    collections::VecDeque,
     fs, io,
-    path::{Path, PathBuf},
+    path::Path,
+    sync::{Arc, Mutex},
 };
 
-use crate::append::{env_util::expand_env_vars, rolling_file::policy::compound::roll::Roll};
+use crate::append::{
+    env_util::expand_env_vars,
+    rolling_file::{policy::compound::roll::Roll, LogFile, RolledLogPath},
+};
+
 #[cfg(feature = "config_parsing")]
 use crate::config::{Deserialize, Deserializers};
 
@@ -35,7 +41,7 @@ pub enum Compression {
 }
 
 impl Compression {
-    fn compress(&self, src: &Path, dst: &str) -> io::Result<()> {
+    fn compress(&self, src: &Path, dst: &Path) -> io::Result<()> {
         match *self {
             Compression::None => move_file(src, dst),
             #[cfg(feature = "gzip")]
@@ -85,8 +91,9 @@ impl Compression {
 #[derive(Clone, Debug)]
 pub struct FixedWindowRoller {
     compression: Compression,
-    base: u32,
-    count: u32,
+    base_count: u32,
+    max_count: u32,
+    rolled_log_files: Arc<Mutex<VecDeque<RolledLogPath>>>,
     #[cfg(feature = "background_rotation")]
     cond_pair: Arc<(Mutex<bool>, Condvar)>,
 }
@@ -100,17 +107,18 @@ impl FixedWindowRoller {
 
 impl Roll for FixedWindowRoller {
     #[cfg(not(feature = "background_rotation"))]
-    fn roll(&self, file: &Path, pattern: &str) -> anyhow::Result<()> {
-        if self.count == 0 {
-            return fs::remove_file(file).map_err(Into::into);
+    fn roll(&self, file: &LogFile) -> anyhow::Result<()> {
+        if self.max_count == 0 {
+            return fs::remove_file(file.path()).map_err(Into::into);
         }
 
+        // roll should take mut self
         rotate(
-            pattern,
+            file,
+            self.rolled_log_files.clone(),
             self.compression,
-            self.base,
-            self.count,
-            file.to_path_buf(),
+            self.base_count,
+            self.max_count,
         )?;
 
         Ok(())
@@ -193,46 +201,71 @@ where
 
 // TODO(eas): compress to tmp file then move into place once prev task is done
 fn rotate(
-    pattern: &str,
+    log: &LogFile,
+    rolled_log_files: Arc<Mutex<VecDeque<RolledLogPath>>>,
     compression: Compression,
-    base: u32,
-    count: u32,
-    file: PathBuf,
-) -> io::Result<()> {
-    // TODO: Use COUNT_PATTERN CONSTANT
-    let base_rolled_log = expand_env_vars(pattern.replace("{}", &base.to_string()));
+    base_count: u32,
+    max_count: u32,
+) -> anyhow::Result<()> {
+    let base_rolled_log = RolledLogPath::new(log, base_count)?;
 
-    if let Some(parent) = Path::new(base_rolled_log.as_ref()).parent() {
+    if let Some(parent) = base_rolled_log.path().parent() {
         fs::create_dir_all(parent)?;
     }
 
     // In the common case, all of the archived files will be in the same
     // directory, so avoid extra filesystem calls in that case.
-    let parent_varies = match (
-        Path::new(base_rolled_log.as_ref()).parent(),
-        Path::new(expand_env_vars(pattern).as_ref()).parent(),
-    ) {
-        (Some(a), Some(b)) => a != b,
-        _ => false, // Only case that can actually happen is (None, None)
-    };
+    // let parent_varies = match (
+    //     Path::new(base_rolled_log.path()).parent(),
+    //     Path::new(expand_env_vars(log.path()).as_ref()).parent(),
+    // ) {
+    //     (Some(a), Some(b)) => a != b,
+    //     _ => false, // Only case that can actually happen is (None, None)
+    // };
 
-    for i in (base..base + count - 1).rev() {
-        let src = expand_env_vars(pattern.replace("{}", &i.to_string()));
-        let dst = expand_env_vars(pattern.replace("{}", &(i + 1).to_string()));
+    let mut rolled_log_files = rolled_log_files.lock().unwrap();
 
-        if parent_varies {
-            if let Some(parent) = Path::new(dst.as_ref()).parent() {
-                fs::create_dir_all(parent)?;
-            }
-        }
-
-        move_file(src.as_ref(), dst.as_ref())?;
+    // Enforce rolled logs `max_count`` invariant
+    debug_assert!(rolled_log_files.len() < max_count as usize + 1);
+    if rolled_log_files.len() > max_count as usize {
+        println!("Rolled logs exceeded max count")
     }
 
-    compression.compress(&file, &base_rolled_log).map_err(|e| {
-        println!("err compressing: {:?}, dst: {:?}", file, base_rolled_log);
-        e
-    })?;
+    // This should only be triggered once in the case we reached `max_count` of
+    // rolled logs. If it has to be triggered multiple times the `max_count`
+    // invariant has been broken.
+    while rolled_log_files.len() >= max_count as usize {
+        let _remove_last_log_file = rolled_log_files.pop_back();
+    }
+
+    for src in rolled_log_files.iter_mut().rev() {
+        let dst = src.increment_count();
+
+        // if parent_varies {
+        //     if let Some(parent) = dst.path().parent() {
+        //         fs::create_dir_all(parent)?;
+        //     }
+        // }
+
+        move_file(src.path(), dst.path())?;
+        *src = dst;
+    }
+
+    // TODO: move this before deleting the last log. In case compression fails
+    // we won't delete the last log.
+    compression
+        .compress(&log.path(), base_rolled_log.path())
+        .map_err(|e| {
+            println!(
+                "err compressing: {:?}, dst: {:?}",
+                log.path(),
+                base_rolled_log
+            );
+            e
+        })?;
+
+    rolled_log_files.push_front(base_rolled_log);
+
     Ok(())
 }
 
@@ -265,8 +298,9 @@ impl FixedWindowRollerBuilder {
     pub fn build(self, compression: Compression, count: u32) -> anyhow::Result<FixedWindowRoller> {
         Ok(FixedWindowRoller {
             compression,
-            base: self.base,
-            count,
+            base_count: self.base,
+            max_count: count,
+            rolled_log_files: Arc::new(Mutex::new(VecDeque::with_capacity(count as usize))),
             #[cfg(feature = "background_rotation")]
             cond_pair: Arc::new((Mutex::new(true), Condvar::new())),
         })

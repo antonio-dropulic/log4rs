@@ -43,11 +43,14 @@ use crate::config::{Deserialize, Deserializers};
 use crate::encode::EncoderConfig;
 
 pub mod policy;
+pub(crate) mod util;
 
 /// Pattern used to replace DateTime in the logfile path
 pub const TIME_PATTERN: &str = "{TIME}";
 /// Pattern used to replace rolling log count
 pub const COUNT_PATTERN: &str = "{}";
+// TODO: USER SHOULD INJECT DATE FORMAT OR ATLEAST SELECT IT
+const DATE_FORMAT_STR: &'static str = "%Y-%m-%d-%H:%M:%S";
 
 /// Configuration for the rolling file appender.
 #[cfg(feature = "config_parsing")]
@@ -112,6 +115,56 @@ impl encode::Write for LogWriter {}
 impl LogWriter {
     const BUFFER_CAPACITY: usize = 1024;
 }
+
+// TODO: move to fixed window roller
+/// Rolled log path
+#[derive(Debug, Clone)]
+struct RolledLogPath {
+    /// Count of the log file, present in the file path. [COUNT_PATTERN] replacement.
+    file_name: String,
+    count: u32,
+    // indices of current count ocurrences. Used to increment the log file count. refering to file name.
+    count_idx: Vec<usize>,
+}
+
+impl RolledLogPath {
+    // TODO: I should be able to create this only from the original log file
+    /// Create a new rolled log path
+    pub fn new(log: &LogFile, count: u32) -> anyhow::Result<Self> {
+        // TODO: What about expand env vars?
+
+        let (count_idx, file_name) =
+            util::replace_count(log.name_with_count(), COUNT_PATTERN, count);
+
+        Ok(Self {
+            count,
+            count_idx,
+            file_name,
+        })
+    }
+
+    pub fn increment_count(&mut self) -> Self {
+        let (count_idx, file_name) =
+            util::increment_count(self.file_name.clone(), self.count, &self.count_idx);
+        Self {
+            file_name,
+            count: self.count + 1,
+            count_idx,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        Path::new(&self.file_name)
+    }
+}
+
+impl Drop for RolledLogPath {
+    fn drop(&mut self) {
+        // need to remove file?
+        todo!()
+    }
+}
+
 /// If a writer is closed. Old path and roller pattern may still be retrieved.
 pub struct LogFile {
     writer: Option<LogWriter>,
@@ -121,11 +174,10 @@ pub struct LogFile {
 
 impl LogFile {
     fn new(append: bool, appender_pattern: &str, base_count: u32) -> anyhow::Result<Self> {
+        // TODO: expand env vars?
         let roller_pattern = appender_pattern.replace(
             TIME_PATTERN,
-            &chrono::Utc::now()
-                .format(RollingFileAppender::DATE_FORMAT_STR)
-                .to_string(),
+            &chrono::Utc::now().format(DATE_FORMAT_STR).to_string(),
         );
 
         let file_name = roller_pattern.replace(COUNT_PATTERN, &base_count.to_string());
@@ -189,6 +241,10 @@ impl LogFile {
         &self.path
     }
 
+    pub fn name_with_count(&self) -> &str {
+        &self.roller_pattern
+    }
+
     /// Returns an estimate of the log file's current size.
     ///
     /// This is calculated by taking the size of the log file when it is opened
@@ -220,7 +276,13 @@ pub struct RollingFileAppender {
     log_file: Mutex<LogFile>,
     append: bool,
     encoder: Box<dyn Encode>,
+    // TODO: for policy to take mut self
+    // The appender also needs to be mut
     policy: Box<dyn policy::Policy>,
+    // TODO: cleannup doc
+    // pattern that contains both time and count
+    // time is used when creating a new log file
+    // count is used when rolling a log file
     appender_pattern: String,
     base_count: u32,
 }
@@ -231,14 +293,13 @@ impl Append for RollingFileAppender {
         let mut log_file = self.log_file.lock();
 
         let is_pre_process = self.policy.is_pre_process();
-        let log_writer =
-            log_file.get_or_init_writer(self.append, &self.appender_pattern, self.base_count)?;
-
         if is_pre_process {
             // TODO(eas): Idea: make this optionally return a future, and if so, we initialize a queue for
             // data that comes in while we are processing the file rotation.
+
             self.policy.process(&mut log_file)?;
 
+            // Create a new log writer if the log was rolled
             let log_writer = log_file.get_or_init_writer(
                 self.append,
                 &self.appender_pattern,
@@ -248,9 +309,17 @@ impl Append for RollingFileAppender {
             self.encoder.encode(log_writer, record)?;
             log_writer.flush()?;
         } else {
+            // Create a new log writter if the log was rolled
+            let log_writer = log_file.get_or_init_writer(
+                self.append,
+                &self.appender_pattern,
+                self.base_count,
+            )?;
+
             self.encoder.encode(log_writer, record)?;
             log_writer.flush()?;
 
+            // roll after writing
             self.policy.process(&mut log_file)?;
         }
 
@@ -261,9 +330,6 @@ impl Append for RollingFileAppender {
 }
 
 impl RollingFileAppender {
-    // TODO: USER SHOULD INJECT DATE FORMAT OR ATLEAST SELECT IT
-    const DATE_FORMAT_STR: &'static str = "%Y-%m-%d-%H:%M:%S";
-
     /// Creates a new `RollingFileAppenderBuilder`.
     pub fn builder() -> RollingFileAppenderBuilder {
         RollingFileAppenderBuilder {

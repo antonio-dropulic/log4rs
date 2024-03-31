@@ -101,9 +101,13 @@ impl CompoundPolicy {
 
 impl Policy for CompoundPolicy {
     fn process(&self, log: &mut LogFile) -> anyhow::Result<()> {
+        // TODO: something strange happening here, i need to debug
         if self.trigger.trigger(log)? {
             log.close_writer();
-            self.roller.roll(log.path(), &log.roller_pattern)
+            // TODO: log path should also carry the information about it's
+            // count. and have a function increment count.
+            // TODO: i need an appender pattern here or roller?
+            self.roller.roll(log)
         } else {
             Ok(())
         }

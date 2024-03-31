@@ -4,7 +4,7 @@
 
 use std::{fs, path::Path};
 
-use crate::append::rolling_file::policy::compound::roll::Roll;
+use crate::append::rolling_file::{policy::compound::roll::Roll, LogFile};
 #[cfg(feature = "config_parsing")]
 use crate::config::{Deserialize, Deserializers};
 
@@ -22,8 +22,8 @@ pub struct DeleteRollerConfig {
 pub struct DeleteRoller(());
 
 impl Roll for DeleteRoller {
-    fn roll(&self, file: &Path, _pattern: &str) -> anyhow::Result<()> {
-        fs::remove_file(file).map_err(Into::into)
+    fn roll(&self, file: &LogFile) -> anyhow::Result<()> {
+        fs::remove_file(file.path()).map_err(Into::into)
     }
 }
 

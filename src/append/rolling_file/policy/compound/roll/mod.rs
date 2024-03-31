@@ -2,6 +2,7 @@
 
 use std::{fmt, path::Path};
 
+use crate::append::rolling_file::LogFile;
 #[cfg(feature = "config_parsing")]
 use crate::config::Deserializable;
 
@@ -19,7 +20,7 @@ pub trait Roll: fmt::Debug + Send + Sync + 'static {
     ///
     /// If this method returns successfully, there *must* no longer be a file
     /// at the specified location.
-    fn roll(&self, file: &Path, pattern: &str) -> anyhow::Result<()>;
+    fn roll(&self, file: &LogFile) -> anyhow::Result<()>;
 }
 
 #[cfg(feature = "config_parsing")]
