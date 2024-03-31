@@ -1,4 +1,4 @@
-use std::{fmt::format, process::Command, sync::OnceLock};
+use std::{fmt::format, process::Command, sync::OnceLock, thread, time::Duration};
 
 use log::info;
 use log4rs::{
@@ -8,7 +8,11 @@ use log4rs::{
             policy::{
                 compound::{
                     roll::fixed_window::{Compression, FixedWindowRoller},
-                    trigger::{size::SizeTrigger, Trigger},
+                    trigger::{
+                        size::SizeTrigger,
+                        time::{TimeTrigger, TimeTriggerConfig, TimeTriggerInterval},
+                        Trigger,
+                    },
                     CompoundPolicy,
                 },
                 Policy,
@@ -49,18 +53,22 @@ fn test_no_color() {
 static HANDLE: OnceLock<log4rs::Handle> = OnceLock::new();
 
 // TODO: this should be an example
+// TODO: test with their time control lib
+// TODO: this seems to work.. whats up with my lib
 #[test]
-fn rolling_log() {
+#[ignore = "manual"]
+fn rolling_log_with_size_trigger() {
+    let max_log_count = 5;
     let roller = FixedWindowRoller::builder()
         .base(1)
-        .build(Compression::None, 5)
+        .build(Compression::None, max_log_count)
         .unwrap();
 
     // every entry should be a new log
     let trigger = SizeTrigger::new(1);
     let roll_policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
 
-    let appender_pattern = format!("log-name-{}-{}.log", "{TIME}", "{}");
+    let appender_pattern = format!("test_logs/log-name-{}-{}.log", "{TIME}", "{}");
 
     let appender = RollingFileAppender::builder()
         .append(false)
@@ -88,7 +96,62 @@ fn rolling_log() {
     HANDLE.get_or_init(|| handle);
 
     // TODO: how do i get this to show up in the log files
-    for i in 0..10 {
-        info!("LOG NUMBER {i}")
+    for i in 0..5 {
+        info!("LOG NUMBER {i}");
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+#[test]
+#[ignore = "manual"]
+fn rolling_log_with_time_trigger() {
+    // Time trigger doesn't get rolled on program end. Thats fine
+
+    let max_log_count = 5;
+    let roller = FixedWindowRoller::builder()
+        .base(1)
+        .build(Compression::None, max_log_count)
+        .unwrap();
+
+    // new log entry every sec
+    let trigger = TimeTrigger::new(TimeTriggerConfig {
+        interval: TimeTriggerInterval::Second(1),
+        modulate: false,
+        max_random_delay: 0,
+    });
+
+    let roll_policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
+
+    let appender_pattern = format!("test_logs/log-name-{}-{}.log", "{TIME}", "{}");
+
+    let appender = RollingFileAppender::builder()
+        .append(false)
+        .base(0)
+        .build(appender_pattern, Box::new(roll_policy))
+        .unwrap();
+
+    let cfg = Config::builder();
+    let root = Root::builder()
+        .appender("rolland")
+        .build(log::LevelFilter::Trace);
+    let config = cfg
+        .appender(Appender::builder().build("rolland", Box::new(appender)))
+        .build(root)
+        .unwrap();
+
+    let handle = log4rs::config::init_config_with_err_handler(
+        config,
+        Box::new(|e| {
+            dbg!(e);
+        }),
+    )
+    .unwrap();
+
+    HANDLE.get_or_init(|| handle);
+
+    // TODO: how do i get this to show up in the log files
+    for i in 0..5 {
+        info!("LOG NUMBER {i}");
+        thread::sleep(Duration::from_secs(2));
     }
 }

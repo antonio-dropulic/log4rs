@@ -1,6 +1,6 @@
 //! Rollers
 
-use std::{fmt, path::Path};
+use std::fmt;
 
 use crate::append::rolling_file::LogFile;
 #[cfg(feature = "config_parsing")]

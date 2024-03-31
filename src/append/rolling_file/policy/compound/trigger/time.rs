@@ -341,160 +341,159 @@ impl Deserialize for TimeTriggerDeserializer {
     }
 }
 
-// #[cfg(test)]
-// mod test {
-//     use super::*;
-//     use mock_instant::MockClock;
-//     use std::time::Duration;
+#[cfg(test)]
+mod test {
+    use super::*;
+    use mock_instant::MockClock;
+    use std::{path::PathBuf, time::Duration};
 
-//     fn trigger_with_time_and_modulate(
-//         interval: TimeTriggerInterval,
-//         modulate: bool,
-//         millis: u64,
-//     ) -> (bool, bool) {
-//         let file = tempfile::tempdir().unwrap();
-//         let logfile = LogFile {
-//             writer: &mut None,
-//             path: file.path(),
-//             len: 0,
-//         };
+    fn trigger_with_time_and_modulate(
+        interval: TimeTriggerInterval,
+        modulate: bool,
+        millis: u64,
+    ) -> (bool, bool) {
+        let logfile = LogFile {
+            writer: None,
+            path: PathBuf::new(),
+            pattern: String::new(),
+        };
 
-//         let config = TimeTriggerConfig {
-//             interval,
-//             modulate,
-//             max_random_delay: 0,
-//         };
+        let config = TimeTriggerConfig {
+            interval,
+            modulate,
+            max_random_delay: 0,
+        };
 
-//         let trigger = TimeTrigger::new(config);
+        let trigger = TimeTrigger::new(config);
 
-//         MockClock::advance_system_time(Duration::from_millis(millis / 2));
-//         let result1 = trigger.trigger(&logfile).unwrap();
+        MockClock::advance_system_time(Duration::from_millis(millis / 2));
+        let result1 = trigger.trigger(&logfile).unwrap();
 
-//         MockClock::advance_system_time(Duration::from_millis(millis / 2));
-//         let result2 = trigger.trigger(&logfile).unwrap();
+        MockClock::advance_system_time(Duration::from_millis(millis / 2));
+        let result2 = trigger.trigger(&logfile).unwrap();
 
-//         (result1, result2)
-//     }
+        (result1, result2)
+    }
 
-//     #[test]
-//     fn trigger() {
-//         let second_in_milli = 1000;
-//         let minute_in_milli = second_in_milli * 60;
-//         let hour_in_milli = minute_in_milli * 60;
-//         let day_in_milli = hour_in_milli * 24;
-//         let week_in_milli = day_in_milli * 7;
-//         let month_in_milli = day_in_milli * 31;
-//         let year_in_milli = day_in_milli * 365;
+    #[test]
+    fn trigger() {
+        let second_in_milli = 1000;
+        let minute_in_milli = second_in_milli * 60;
+        let hour_in_milli = minute_in_milli * 60;
+        let day_in_milli = hour_in_milli * 24;
+        let week_in_milli = day_in_milli * 7;
+        let month_in_milli = day_in_milli * 31;
+        let year_in_milli = day_in_milli * 365;
 
-//         let test_list = vec![
-//             (TimeTriggerInterval::Second(1), second_in_milli),
-//             (TimeTriggerInterval::Minute(1), minute_in_milli),
-//             (TimeTriggerInterval::Hour(1), hour_in_milli),
-//             (TimeTriggerInterval::Day(1), day_in_milli),
-//             (TimeTriggerInterval::Week(1), week_in_milli),
-//             (TimeTriggerInterval::Month(1), month_in_milli),
-//             (TimeTriggerInterval::Year(1), year_in_milli),
-//         ];
-//         let modulate = false;
-//         for (time_trigger_interval, time_in_milli) in test_list.iter() {
-//             MockClock::set_system_time(Duration::from_millis(4 * day_in_milli)); // 1970/1/5 00:00:00 Monday
-//             assert_eq!(
-//                 trigger_with_time_and_modulate(*time_trigger_interval, modulate, *time_in_milli),
-//                 (false, true)
-//             );
-//             // trigger will be aligned with units.
-//             MockClock::set_system_time(
-//                 Duration::from_millis(4 * day_in_milli) + Duration::from_millis(time_in_milli / 2),
-//             );
-//             assert_eq!(
-//                 trigger_with_time_and_modulate(*time_trigger_interval, modulate, *time_in_milli),
-//                 (true, false)
-//             );
-//         }
+        let test_list = vec![
+            (TimeTriggerInterval::Second(1), second_in_milli),
+            (TimeTriggerInterval::Minute(1), minute_in_milli),
+            (TimeTriggerInterval::Hour(1), hour_in_milli),
+            (TimeTriggerInterval::Day(1), day_in_milli),
+            (TimeTriggerInterval::Week(1), week_in_milli),
+            (TimeTriggerInterval::Month(1), month_in_milli),
+            (TimeTriggerInterval::Year(1), year_in_milli),
+        ];
+        let modulate = false;
+        for (time_trigger_interval, time_in_milli) in test_list.iter() {
+            MockClock::set_system_time(Duration::from_millis(4 * day_in_milli)); // 1970/1/5 00:00:00 Monday
+            assert_eq!(
+                trigger_with_time_and_modulate(*time_trigger_interval, modulate, *time_in_milli),
+                (false, true)
+            );
+            // trigger will be aligned with units.
+            MockClock::set_system_time(
+                Duration::from_millis(4 * day_in_milli) + Duration::from_millis(time_in_milli / 2),
+            );
+            assert_eq!(
+                trigger_with_time_and_modulate(*time_trigger_interval, modulate, *time_in_milli),
+                (true, false)
+            );
+        }
 
-//         let test_list = vec![
-//             (TimeTriggerInterval::Second(3), 3 * second_in_milli),
-//             (TimeTriggerInterval::Minute(3), 3 * minute_in_milli),
-//             (TimeTriggerInterval::Hour(3), 3 * hour_in_milli),
-//             (TimeTriggerInterval::Day(3), 3 * day_in_milli),
-//             (TimeTriggerInterval::Week(3), 3 * week_in_milli),
-//             (TimeTriggerInterval::Month(3), 3 * month_in_milli),
-//             (TimeTriggerInterval::Year(3), 3 * year_in_milli),
-//         ];
-//         let modulate = true;
-//         for (time_trigger_interval, time_in_milli) in test_list.iter() {
-//             MockClock::set_system_time(Duration::from_millis(
-//                 59 * day_in_milli + 2 * hour_in_milli + 2 * minute_in_milli + 2 * second_in_milli,
-//             )); // 1970/3/1 02:02:02 Sunday
-//             assert_eq!(
-//                 trigger_with_time_and_modulate(*time_trigger_interval, modulate, *time_in_milli),
-//                 (true, false)
-//             );
-//         }
-//     }
+        let test_list = vec![
+            (TimeTriggerInterval::Second(3), 3 * second_in_milli),
+            (TimeTriggerInterval::Minute(3), 3 * minute_in_milli),
+            (TimeTriggerInterval::Hour(3), 3 * hour_in_milli),
+            (TimeTriggerInterval::Day(3), 3 * day_in_milli),
+            (TimeTriggerInterval::Week(3), 3 * week_in_milli),
+            (TimeTriggerInterval::Month(3), 3 * month_in_milli),
+            (TimeTriggerInterval::Year(3), 3 * year_in_milli),
+        ];
+        let modulate = true;
+        for (time_trigger_interval, time_in_milli) in test_list.iter() {
+            MockClock::set_system_time(Duration::from_millis(
+                59 * day_in_milli + 2 * hour_in_milli + 2 * minute_in_milli + 2 * second_in_milli,
+            )); // 1970/3/1 02:02:02 Sunday
+            assert_eq!(
+                trigger_with_time_and_modulate(*time_trigger_interval, modulate, *time_in_milli),
+                (true, false)
+            );
+        }
+    }
 
-//     #[test]
-//     #[cfg(feature = "yaml_format")]
-//     fn test_serde() {
-//         let test_error = vec![
-//             "abc",   // // str none none
-//             "",      // none
-//             "5 das", // bad unit
-//             "-1",    // inegative integar
-//             "2.0",   //flaot
-//         ];
+    #[test]
+    #[cfg(feature = "yaml_format")]
+    fn test_serde() {
+        let test_error = vec![
+            "abc",   // // str none none
+            "",      // none
+            "5 das", // bad unit
+            "-1",    // inegative integar
+            "2.0",   //flaot
+        ];
 
-//         for interval in test_error.iter() {
-//             let error = ::serde_yaml::from_str::<TimeTriggerInterval>(&interval);
-//             assert!(error.is_err());
-//         }
+        for interval in test_error.iter() {
+            let error = ::serde_yaml::from_str::<TimeTriggerInterval>(&interval);
+            assert!(error.is_err());
+        }
 
-//         let test_ok = vec![
-//             // u64
-//             ("1", TimeTriggerInterval::Second(1)),
-//             // str second
-//             ("1 second", TimeTriggerInterval::Second(1)),
-//             ("1 seconds", TimeTriggerInterval::Second(1)),
-//             // str minute
-//             ("1 minute", TimeTriggerInterval::Minute(1)),
-//             ("1 minutes", TimeTriggerInterval::Minute(1)),
-//             // str hour
-//             ("1 hour", TimeTriggerInterval::Hour(1)),
-//             ("1 hours", TimeTriggerInterval::Hour(1)),
-//             // str day
-//             ("1 day", TimeTriggerInterval::Day(1)),
-//             ("1 days", TimeTriggerInterval::Day(1)),
-//             // str week
-//             ("1 week", TimeTriggerInterval::Week(1)),
-//             ("1 weeks", TimeTriggerInterval::Week(1)),
-//             // str month
-//             ("1 month", TimeTriggerInterval::Month(1)),
-//             ("1 months", TimeTriggerInterval::Month(1)),
-//             // str year
-//             ("1 year", TimeTriggerInterval::Year(1)),
-//             ("1 years", TimeTriggerInterval::Year(1)),
-//         ];
-//         for (interval, expected) in test_ok.iter() {
-//             let interval = format!("{}", interval);
-//             let interval = ::serde_yaml::from_str::<TimeTriggerInterval>(&interval).unwrap();
-//             assert_eq!(interval, *expected);
-//         }
-//     }
+        let test_ok = vec![
+            // u64
+            ("1", TimeTriggerInterval::Second(1)),
+            // str second
+            ("1 second", TimeTriggerInterval::Second(1)),
+            ("1 seconds", TimeTriggerInterval::Second(1)),
+            // str minute
+            ("1 minute", TimeTriggerInterval::Minute(1)),
+            ("1 minutes", TimeTriggerInterval::Minute(1)),
+            // str hour
+            ("1 hour", TimeTriggerInterval::Hour(1)),
+            ("1 hours", TimeTriggerInterval::Hour(1)),
+            // str day
+            ("1 day", TimeTriggerInterval::Day(1)),
+            ("1 days", TimeTriggerInterval::Day(1)),
+            // str week
+            ("1 week", TimeTriggerInterval::Week(1)),
+            ("1 weeks", TimeTriggerInterval::Week(1)),
+            // str month
+            ("1 month", TimeTriggerInterval::Month(1)),
+            ("1 months", TimeTriggerInterval::Month(1)),
+            // str year
+            ("1 year", TimeTriggerInterval::Year(1)),
+            ("1 years", TimeTriggerInterval::Year(1)),
+        ];
+        for (interval, expected) in test_ok.iter() {
+            let interval = format!("{}", interval);
+            let interval = ::serde_yaml::from_str::<TimeTriggerInterval>(&interval).unwrap();
+            assert_eq!(interval, *expected);
+        }
+    }
 
-//     #[test]
-//     fn test_time_trigger_limit_default() {
-//         let interval = TimeTriggerInterval::default();
-//         assert_eq!(interval, TimeTriggerInterval::Second(1));
-//     }
+    #[test]
+    fn test_time_trigger_limit_default() {
+        let interval = TimeTriggerInterval::default();
+        assert_eq!(interval, TimeTriggerInterval::Second(1));
+    }
 
-//     #[test]
-//     fn pre_process() {
-//         let config = TimeTriggerConfig {
-//             interval: TimeTriggerInterval::Minute(2),
-//             modulate: true,
-//             max_random_delay: 0,
-//         };
-//         let trigger = TimeTrigger::new(config);
-//         assert!(trigger.is_pre_process());
-//     }
-// }
+    #[test]
+    fn pre_process() {
+        let config = TimeTriggerConfig {
+            interval: TimeTriggerInterval::Minute(2),
+            modulate: true,
+            max_random_delay: 0,
+        };
+        let trigger = TimeTrigger::new(config);
+        assert!(trigger.is_pre_process());
+    }
+}

@@ -254,7 +254,7 @@ fn rotate(
     // TODO: move this before deleting the last log. In case compression fails
     // we won't delete the last log.
     compression
-        .compress(&log.path(), base_rolled_log.path())
+        .compress(log.path(), base_rolled_log.path())
         .map_err(|e| {
             println!(
                 "err compressing: {:?}, dst: {:?}",

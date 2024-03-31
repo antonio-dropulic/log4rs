@@ -2,7 +2,7 @@
 //!
 //! Requires the `delete_roller` feature.
 
-use std::{fs, path::Path};
+use std::fs;
 
 use crate::append::rolling_file::{policy::compound::roll::Roll, LogFile};
 #[cfg(feature = "config_parsing")]

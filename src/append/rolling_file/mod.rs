@@ -50,7 +50,7 @@ pub const TIME_PATTERN: &str = "{TIME}";
 /// Pattern used to replace rolling log count
 pub const COUNT_PATTERN: &str = "{}";
 // TODO: USER SHOULD INJECT DATE FORMAT OR ATLEAST SELECT IT
-const DATE_FORMAT_STR: &'static str = "%Y-%m-%d-%H:%M:%S";
+const DATE_FORMAT_STR: &str = "%Y-%m-%d-%H:%M:%S";
 
 /// Configuration for the rolling file appender.
 #[cfg(feature = "config_parsing")]
@@ -131,9 +131,7 @@ impl RolledLogPath {
     /// Create a new rolled log path
     pub fn new(log: &LogFile, count: u32) -> anyhow::Result<Self> {
         // TODO: What about expand env vars?
-
-        let (count_idx, file_name) =
-            util::replace_count(log.name_with_count(), COUNT_PATTERN, count);
+        let (count_idx, file_name) = util::replace_count(log.pattern(), COUNT_PATTERN, count);
 
         Ok(Self {
             count,
@@ -142,7 +140,7 @@ impl RolledLogPath {
         })
     }
 
-    pub fn increment_count(&mut self) -> Self {
+    pub fn increment_count(&self) -> Self {
         let (count_idx, file_name) =
             util::increment_count(self.file_name.clone(), self.count, &self.count_idx);
         Self {
@@ -157,14 +155,26 @@ impl RolledLogPath {
     }
 }
 
-/// If a writer is closed. Old path and roller pattern may still be retrieved.
+/// Active log file. Keeps an instance of a [LogWriter] allowing writes to the
+/// active log file. During it's lifetime [LogFile] can point to many different
+/// files.
+/// The lifetime of any specific log file is controled with
+/// [Self::close_writer] and [Self::get_or_init_writer].
 pub struct LogFile {
+    /// Writer to the active log file
     writer: Option<LogWriter>,
+    /// Active log file path. If [Self::writer] is closed, it
+    /// is the path of the last active log file.
     path: PathBuf,
-    roller_pattern: String,
+    /// Pattern with [COUNT_PATTERN] in [Self::path]
+    pattern: String,
 }
 
 impl LogFile {
+    /// Create a new log file.
+    ///
+    /// `append` controls if the file is opened in append mode.
+    /// `pattern` and `count` are used to create the log file path: [Self::path]
     fn new(append: bool, appender_pattern: &str, base_count: u32) -> anyhow::Result<Self> {
         // TODO: expand env vars?
         let roller_pattern = appender_pattern.replace(
@@ -198,12 +208,10 @@ impl LogFile {
                 len,
             }),
             path,
-            roller_pattern,
+            pattern: roller_pattern,
         })
     }
 
-    /// Triggers the log file to roll over.
-    ///
     /// A policy must call this method when it wishes to roll the log. The
     /// appender's handle to the file will be closed, which is necessary to
     /// move or delete the file on Windows.
@@ -213,6 +221,9 @@ impl LogFile {
     pub fn close_writer(&mut self) {
         self.writer = None;
     }
+
+    /// Allows writing to the log file. Opens a new writer if the log was rolled
+    /// and the writer was closed.
     fn get_or_init_writer(
         &mut self,
         append: bool,
@@ -223,6 +234,7 @@ impl LogFile {
             Some(ref mut writer) => Ok(writer),
             None => {
                 *self = Self::new(append, appender_pattern, base_count)?;
+                // SAFETY: new must create a writer
                 Ok(self.writer.as_mut().unwrap())
             }
         }
@@ -233,8 +245,9 @@ impl LogFile {
         &self.path
     }
 
-    pub fn name_with_count(&self) -> &str {
-        &self.roller_pattern
+    /// Pattern with [COUNT_PATTERN] used to build [Self::path]
+    pub fn pattern(&self) -> &str {
+        &self.pattern
     }
 
     /// Returns an estimate of the log file's current size.
