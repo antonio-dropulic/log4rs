@@ -128,7 +128,6 @@ struct RolledLogPath {
 }
 
 impl RolledLogPath {
-    // TODO: I should be able to create this only from the original log file
     /// Create a new rolled log path
     pub fn new(log: &LogFile, count: u32) -> anyhow::Result<Self> {
         // TODO: What about expand env vars?
@@ -155,13 +154,6 @@ impl RolledLogPath {
 
     pub fn path(&self) -> &Path {
         Path::new(&self.file_name)
-    }
-}
-
-impl Drop for RolledLogPath {
-    fn drop(&mut self) {
-        // need to remove file?
-        todo!()
     }
 }
 
