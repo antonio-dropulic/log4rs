@@ -419,113 +419,117 @@ impl Deserialize for RollingFileAppenderDeserializer {
     }
 }
 
-// #[cfg(test)]
-// mod test {
-//     use std::{
-//         fs::File,
-//         io::{Read, Write},
-//     };
+#[cfg(test)]
+mod test {
+    use std::{
+        fs::File,
+        io::{Read, Write},
+    };
 
-//     use super::*;
-//     use crate::append::rolling_file::policy::Policy;
+    use super::*;
+    use crate::append::rolling_file::policy::Policy;
 
-//     #[test]
-//     #[cfg(feature = "yaml_format")]
-//     fn deserialize() {
-//         use crate::config::{Deserializers, RawConfig};
+    #[test]
+    #[cfg(feature = "yaml_format")]
+    fn deserialize() {
+        use crate::config::{Deserializers, RawConfig};
 
-//         let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
 
-//         let config = format!(
-//             "
-// appenders:
-//     foo:
-//         kind: rolling_file
-//         path: {0}/foo.log
-//         policy:
-//             trigger:
-//                 kind: time
-//                 interval: 2 minutes
-//             roller:
-//                 kind: delete
-//     bar:
-//         kind: rolling_file
-//         path: {0}/foo.log
-//         policy:
-//             kind: compound
-//             trigger:
-//                 kind: size
-//                 limit: 5 mb
-//             roller:
-//                 kind: fixed_window
-//                 pattern: '{0}/foo.log.{{}}'
-//                 base: 1
-//                 count: 5
-// ",
-//             dir.path().display()
-//         );
+        let config = format!(
+            "
+appenders:
+    foo:
+        kind: rolling_file
+        path: {0}/foo.log
+        policy:
+            trigger:
+                kind: time
+                interval: 2 minutes
+            roller:
+                kind: delete
+    bar:
+        kind: rolling_file
+        path: {0}/foo.log
+        policy:
+            kind: compound
+            trigger:
+                kind: size
+                limit: 5 mb
+            roller:
+                kind: fixed_window
+                pattern: '{0}/foo.log.{{}}'
+                base: 1
+                count: 5
+",
+            dir.path().display()
+        );
 
-//         let config = ::serde_yaml::from_str::<RawConfig>(&config).unwrap();
-//         let errors = config.appenders_lossy(&Deserializers::new()).1;
-//         println!("{:?}", errors);
-//         assert!(errors.is_empty());
-//     }
+        let config = ::serde_yaml::from_str::<RawConfig>(&config).unwrap();
+        let errors = config.appenders_lossy(&Deserializers::new()).1;
+        println!("{:?}", errors);
+        assert!(errors.is_empty());
+    }
 
-//     #[derive(Debug)]
-//     struct NopPolicy;
+    #[derive(Debug)]
+    struct NopPolicy;
 
-//     impl Policy for NopPolicy {
-//         fn process(&self, _: &mut LogFile) -> anyhow::Result<()> {
-//             Ok(())
-//         }
-//         fn is_pre_process(&self) -> bool {
-//             false
-//         }
-//     }
+    impl Policy for NopPolicy {
+        fn process(&self, _: &mut LogFile) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_pre_process(&self) -> bool {
+            false
+        }
+    }
 
-//     #[test]
-//     fn append() {
-//         let dir = tempfile::tempdir().unwrap();
-//         let path = dir.path().join("append.log");
-//         RollingFileAppender::builder()
-//             .append(true)
-//             .build(&path, Box::new(NopPolicy))
-//             .unwrap();
-//         assert!(path.exists());
-//         File::create(&path).unwrap().write_all(b"hello").unwrap();
+    #[test]
+    fn append() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("append.log");
+        let pattern = path.to_str().unwrap().to_string();
 
-//         RollingFileAppender::builder()
-//             .append(true)
-//             .build(&path, Box::new(NopPolicy))
-//             .unwrap();
-//         let mut contents = vec![];
-//         File::open(&path)
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         assert_eq!(contents, b"hello");
-//     }
+        RollingFileAppender::builder()
+            .append(true)
+            .build(pattern.clone(), Box::new(NopPolicy))
+            .unwrap();
+        assert!(path.exists());
+        File::create(&path).unwrap().write_all(b"hello").unwrap();
 
-//     #[test]
-//     fn truncate() {
-//         let dir = tempfile::tempdir().unwrap();
-//         let path = dir.path().join("truncate.log");
-//         RollingFileAppender::builder()
-//             .append(false)
-//             .build(&path, Box::new(NopPolicy))
-//             .unwrap();
-//         assert!(path.exists());
-//         File::create(&path).unwrap().write_all(b"hello").unwrap();
+        RollingFileAppender::builder()
+            .append(true)
+            .build(pattern.clone(), Box::new(NopPolicy))
+            .unwrap();
+        let mut contents = vec![];
+        File::open(&path)
+            .unwrap()
+            .read_to_end(&mut contents)
+            .unwrap();
+        assert_eq!(contents, b"hello");
+    }
 
-//         RollingFileAppender::builder()
-//             .append(false)
-//             .build(&path, Box::new(NopPolicy))
-//             .unwrap();
-//         let mut contents = vec![];
-//         File::open(&path)
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         assert_eq!(contents, b"");
-//     }
-// }
+    #[test]
+    fn truncate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncate.log");
+        let pattern = path.to_str().unwrap().to_string();
+
+        RollingFileAppender::builder()
+            .append(false)
+            .build(pattern.clone(), Box::new(NopPolicy))
+            .unwrap();
+        assert!(path.exists());
+        File::create(&path).unwrap().write_all(b"hello").unwrap();
+
+        RollingFileAppender::builder()
+            .append(false)
+            .build(pattern.clone(), Box::new(NopPolicy))
+            .unwrap();
+        let mut contents = vec![];
+        File::open(&path)
+            .unwrap()
+            .read_to_end(&mut contents)
+            .unwrap();
+        assert_eq!(contents, b"");
+    }
+}

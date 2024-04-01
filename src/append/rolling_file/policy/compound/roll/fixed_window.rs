@@ -311,7 +311,7 @@ impl FixedWindowRollerBuilder {
     /// If the extension is `.gz` and the `gzip` feature is *not* enabled, an error will be returned.
     ///
     /// `count` is the maximum number of archived logs to maintain.
-    pub fn build(self, pattern: String, count: u32) -> anyhow::Result<FixedWindowRoller> {
+    pub fn build(self, pattern: String, max_count: u32) -> anyhow::Result<FixedWindowRoller> {
         if !pattern.contains(COUNT_PATTERN) {
             bail!("pattern does not contain: {}", COUNT_PATTERN);
         }
@@ -332,8 +332,8 @@ impl FixedWindowRollerBuilder {
         Ok(FixedWindowRoller {
             compression,
             base_count: self.base,
-            max_count: count,
-            rolled_log_files: Arc::new(Mutex::new(VecDeque::with_capacity(count as usize))),
+            max_count,
+            rolled_log_files: Arc::new(Mutex::new(VecDeque::with_capacity(max_count as usize))),
             pattern,
             parent_varies,
             #[cfg(feature = "background_rotation")]
@@ -476,268 +476,291 @@ impl Deserialize for FixedWindowRollerDeserializer {
     }
 }
 
-// #[cfg(test)]
-// mod test {
-//     use std::{
-//         fs::File,
-//         io::{Read, Write},
-//     };
+#[cfg(test)]
+mod test {
+    use std::{
+        fs::File,
+        io::{Read, Write},
+    };
 
-//     use super::*;
-//     use crate::append::rolling_file::policy::compound::roll::Roll;
+    use super::*;
+    use crate::append::rolling_file::policy::compound::roll::Roll;
 
-//     #[cfg(feature = "background_rotation")]
-//     fn wait_for_roller(roller: &FixedWindowRoller) {
-//         std::thread::sleep(std::time::Duration::from_millis(100));
-//         let _lock = roller.cond_pair.0.lock();
-//     }
+    #[cfg(feature = "background_rotation")]
+    fn wait_for_roller(roller: &FixedWindowRoller) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let _lock = roller.cond_pair.0.lock();
+    }
 
-//     #[cfg(not(feature = "background_rotation"))]
-//     fn wait_for_roller(_roller: &FixedWindowRoller) {}
+    #[cfg(not(feature = "background_rotation"))]
+    fn wait_for_roller(_roller: &FixedWindowRoller) {}
 
-//     #[test]
-//     fn rotation() {
-//         let dir = tempfile::tempdir().unwrap();
-//         let base = dir.path().to_str().unwrap();
-//         let file_name_pattern = &format!("{}/foo.log.{{}}", base);
-//         let base_count = 0;
+    #[test]
+    fn rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_str().unwrap();
+        let pattern = format!("{}/foo.log.{}", base, COUNT_PATTERN);
+        let rolled_log_max_count = 2;
+        let log_base_count = 0;
+        let rolled_log_base_count = 1;
 
-//         let roller = FixedWindowRoller::builder()
-//             .build(Compression::None, base_count)
-//             .unwrap();
+        let roller = FixedWindowRoller::builder()
+            .base(rolled_log_base_count)
+            .build(pattern.clone(), rolled_log_max_count)
+            .unwrap();
 
-//         let file = dir.path().join("foo.log");
-//         File::create(&file).unwrap().write_all(b"file1").unwrap();
+        let mut log_file = LogFile::new(false, &pattern, log_base_count).unwrap();
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
-//         assert!(!file.exists());
-//         let mut contents = vec![];
-//         File::open(dir.path().join("foo.log.0"))
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         assert_eq!(contents, b"file1");
+        let test_content = b"file1";
+        log_file
+            .get_or_init_writer()
+            .unwrap()
+            .write_all(test_content)
+            .unwrap();
 
-//         File::create(&file).unwrap().write_all(b"file2").unwrap();
+        // writer must be closed before making a call to roll
+        log_file.close_writer();
+        roller.roll(&log_file).unwrap();
+        wait_for_roller(&roller);
+        assert!(!log_file.path().exists(), "log file got rolled");
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
-//         assert!(!file.exists());
-//         contents.clear();
-//         File::open(dir.path().join("foo.log.1"))
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         assert_eq!(contents, b"file1");
-//         contents.clear();
-//         File::open(dir.path().join("foo.log.0"))
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         assert_eq!(contents, b"file2");
+        let mut contents = vec![];
 
-//         File::create(&file).unwrap().write_all(b"file3").unwrap();
+        let rolled_log_path = roller
+            .rolled_log_files
+            .lock()
+            .unwrap()
+            .front()
+            .unwrap()
+            .path()
+            .to_owned();
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
-//         assert!(!file.exists());
-//         contents.clear();
-//         assert!(!dir.path().join("foo.log.2").exists());
-//         File::open(dir.path().join("foo.log.1"))
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         assert_eq!(contents, b"file2");
-//         contents.clear();
-//         File::open(dir.path().join("foo.log.0"))
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         assert_eq!(contents, b"file3");
-//     }
+        File::open(rolled_log_path)
+            .unwrap()
+            .read_to_end(&mut contents)
+            .unwrap();
 
-//     #[test]
-//     fn rotation_no_trivial_base() {
-//         let dir = tempfile::tempdir().unwrap();
-//         let base = 3;
-//         let fname = "foo.log";
-//         let fcontent = b"something";
-//         let expected_fist_roll = format!("{}.{}", fname, base);
+        assert_eq!(contents, test_content);
 
-//         let base_dir = dir.path().to_str().unwrap();
-//         let roller = FixedWindowRoller::builder()
-//             .base(base)
-//             .build(&format!("{}/{}.{{}}", base_dir, fname), 2)
-//             .unwrap();
+        //File::create(&file).unwrap().write_all(b"file2").unwrap();
 
-//         let file = dir.path().join(fname);
-//         File::create(&file).unwrap().write_all(fcontent).unwrap();
+        // roller.roll(&file).unwrap();
+        // wait_for_roller(&roller);
+        // assert!(!file.exists());
+        // contents.clear();
+        // File::open(dir.path().join("foo.log.1"))
+        //     .unwrap()
+        //     .read_to_end(&mut contents)
+        //     .unwrap();
+        // assert_eq!(contents, b"file1");
+        // contents.clear();
+        // File::open(dir.path().join("foo.log.0"))
+        //     .unwrap()
+        //     .read_to_end(&mut contents)
+        //     .unwrap();
+        // assert_eq!(contents, b"file2");
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
-//         assert!(!file.exists());
+        // File::create(&file).unwrap().write_all(b"file3").unwrap();
 
-//         let mut contents = vec![];
+        // roller.roll(&file).unwrap();
+        // wait_for_roller(&roller);
+        // assert!(!file.exists());
+        // contents.clear();
+        // assert!(!dir.path().join("foo.log.2").exists());
+        // File::open(dir.path().join("foo.log.1"))
+        //     .unwrap()
+        //     .read_to_end(&mut contents)
+        //     .unwrap();
+        // assert_eq!(contents, b"file2");
+        // contents.clear();
+        // File::open(dir.path().join("foo.log.0"))
+        //     .unwrap()
+        //     .read_to_end(&mut contents)
+        //     .unwrap();
+        // assert_eq!(contents, b"file3");
+    }
 
-//         let first_roll = dir.path().join(&expected_fist_roll);
+    // #[test]
+    // fn rotation_no_trivial_base() {
+    //     let dir = tempfile::tempdir().unwrap();
+    //     let base = 3;
+    //     let fname = "foo.log";
+    //     let fcontent = b"something";
+    //     let expected_fist_roll = format!("{}.{}", fname, base);
 
-//         assert!(first_roll.as_path().exists());
+    //     let base_dir = dir.path().to_str().unwrap();
+    //     let roller = FixedWindowRoller::builder()
+    //         .base(base)
+    //         .build(&format!("{}/{}.{{}}", base_dir, fname), 2)
+    //         .unwrap();
 
-//         File::open(first_roll)
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         assert_eq!(contents, fcontent);
+    //     let file = dir.path().join(fname);
+    //     File::create(&file).unwrap().write_all(fcontent).unwrap();
 
-//         // Sanity check general behaviour
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
-//         assert!(!file.exists());
-//         contents.clear();
-//         File::open(dir.path().join(&format!("{}.{}", fname, base + 1)))
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         assert_eq!(contents, b"something");
-//     }
+    //     roller.roll(&file).unwrap();
+    //     wait_for_roller(&roller);
+    //     assert!(!file.exists());
 
-//     #[test]
-//     fn create_archive_unvaried() {
-//         let dir = tempfile::tempdir().unwrap();
+    //     let mut contents = vec![];
 
-//         let base = dir.path().join("log").join("archive");
-//         let pattern = base.join("foo.{}.log");
-//         let roller = FixedWindowRoller::builder()
-//             .build(pattern.to_str().unwrap(), 2)
-//             .unwrap();
+    //     let first_roll = dir.path().join(&expected_fist_roll);
 
-//         let file = dir.path().join("foo.log");
-//         File::create(&file).unwrap().write_all(b"file").unwrap();
+    //     assert!(first_roll.as_path().exists());
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
+    //     File::open(first_roll)
+    //         .unwrap()
+    //         .read_to_end(&mut contents)
+    //         .unwrap();
+    //     assert_eq!(contents, fcontent);
 
-//         assert!(base.join("foo.0.log").exists());
+    //     // Sanity check general behaviour
+    //     roller.roll(&file).unwrap();
+    //     wait_for_roller(&roller);
+    //     assert!(!file.exists());
+    //     contents.clear();
+    //     File::open(dir.path().join(&format!("{}.{}", fname, base + 1)))
+    //         .unwrap()
+    //         .read_to_end(&mut contents)
+    //         .unwrap();
+    //     assert_eq!(contents, b"something");
+    // }
 
-//         let file = dir.path().join("foo.log");
-//         File::create(&file).unwrap().write_all(b"file2").unwrap();
+    // #[test]
+    // fn create_archive_unvaried() {
+    //     let dir = tempfile::tempdir().unwrap();
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
+    //     let base = dir.path().join("log").join("archive");
+    //     let pattern = base.join("foo.{}.log");
+    //     let roller = FixedWindowRoller::builder()
+    //         .build(pattern.to_str().unwrap(), 2)
+    //         .unwrap();
 
-//         assert!(base.join("foo.0.log").exists());
-//         assert!(base.join("foo.1.log").exists());
-//     }
+    //     let file = dir.path().join("foo.log");
+    //     File::create(&file).unwrap().write_all(b"file").unwrap();
 
-//     #[test]
-//     fn create_archive_varied() {
-//         let dir = tempfile::tempdir().unwrap();
+    //     roller.roll(&file).unwrap();
+    //     wait_for_roller(&roller);
 
-//         let base = dir.path().join("log").join("archive");
-//         let pattern = base.join("{}").join("foo.log");
-//         let roller = FixedWindowRoller::builder()
-//             .build(pattern.to_str().unwrap(), 2)
-//             .unwrap();
+    //     assert!(base.join("foo.0.log").exists());
 
-//         let file = dir.path().join("foo.log");
-//         File::create(&file).unwrap().write_all(b"file").unwrap();
+    //     let file = dir.path().join("foo.log");
+    //     File::create(&file).unwrap().write_all(b"file2").unwrap();
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
+    //     roller.roll(&file).unwrap();
+    //     wait_for_roller(&roller);
 
-//         assert!(base.join("0").join("foo.log").exists());
+    //     assert!(base.join("foo.0.log").exists());
+    //     assert!(base.join("foo.1.log").exists());
+    // }
 
-//         let file = dir.path().join("foo.log");
-//         File::create(&file).unwrap().write_all(b"file2").unwrap();
+    // #[test]
+    // fn create_archive_varied() {
+    //     let dir = tempfile::tempdir().unwrap();
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
+    //     let base = dir.path().join("log").join("archive");
+    //     let pattern = base.join("{}").join("foo.log");
+    //     let roller = FixedWindowRoller::builder()
+    //         .build(pattern.to_str().unwrap(), 2)
+    //         .unwrap();
 
-//         assert!(base.join("0").join("foo.log").exists());
-//         assert!(base.join("1").join("foo.log").exists());
-//     }
+    //     let file = dir.path().join("foo.log");
+    //     File::create(&file).unwrap().write_all(b"file").unwrap();
 
-//     #[test]
-//     #[cfg_attr(feature = "gzip", ignore)]
-//     fn unsupported_gzip() {
-//         let dir = tempfile::tempdir().unwrap();
+    //     roller.roll(&file).unwrap();
+    //     wait_for_roller(&roller);
 
-//         let pattern = dir.path().join("{}.gz");
-//         assert!(FixedWindowRoller::builder()
-//             .build(pattern.to_str().unwrap(), 2)
-//             .is_err());
-//     }
+    //     assert!(base.join("0").join("foo.log").exists());
 
-//     #[test]
-//     #[cfg_attr(not(feature = "gzip"), ignore)]
-//     // or should we force windows user to install gunzip
-//     #[cfg(not(windows))]
-//     fn supported_gzip() {
-//         use std::process::Command;
+    //     let file = dir.path().join("foo.log");
+    //     File::create(&file).unwrap().write_all(b"file2").unwrap();
 
-//         let dir = tempfile::tempdir().unwrap();
+    //     roller.roll(&file).unwrap();
+    //     wait_for_roller(&roller);
 
-//         let pattern = dir.path().join("{}.gz");
-//         let roller = FixedWindowRoller::builder()
-//             .build(pattern.to_str().unwrap(), 2)
-//             .unwrap();
+    //     assert!(base.join("0").join("foo.log").exists());
+    //     assert!(base.join("1").join("foo.log").exists());
+    // }
 
-//         let contents = (0..10000).map(|i| i as u8).collect::<Vec<_>>();
+    // #[test]
+    // #[cfg_attr(feature = "gzip", ignore)]
+    // fn unsupported_gzip() {
+    //     let dir = tempfile::tempdir().unwrap();
 
-//         let file = dir.path().join("foo.log");
-//         File::create(&file).unwrap().write_all(&contents).unwrap();
+    //     let pattern = dir.path().join("{}.gz");
+    //     assert!(FixedWindowRoller::builder()
+    //         .build(pattern.to_str().unwrap(), 2)
+    //         .is_err());
+    // }
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
+    // #[test]
+    // #[cfg_attr(not(feature = "gzip"), ignore)]
+    // // or should we force windows user to install gunzip
+    // #[cfg(not(windows))]
+    // fn supported_gzip() {
+    //     use std::process::Command;
 
-//         assert!(Command::new("gunzip")
-//             .arg(dir.path().join("0.gz"))
-//             .status()
-//             .unwrap()
-//             .success());
+    //     let dir = tempfile::tempdir().unwrap();
 
-//         let mut file = File::open(dir.path().join("0")).unwrap();
-//         let mut actual = vec![];
-//         file.read_to_end(&mut actual).unwrap();
+    //     let pattern = dir.path().join("{}.gz");
+    //     let roller = FixedWindowRoller::builder()
+    //         .build(pattern.to_str().unwrap(), 2)
+    //         .unwrap();
 
-//         assert_eq!(contents, actual);
-//     }
+    //     let contents = (0..10000).map(|i| i as u8).collect::<Vec<_>>();
 
-//     #[test]
-//     fn roll_with_env_var() {
-//         std::env::set_var("LOG_DIR", "test_log_dir");
-//         let fcontent = b"file1";
-//         let dir = tempfile::tempdir().unwrap();
+    //     let file = dir.path().join("foo.log");
+    //     File::create(&file).unwrap().write_all(&contents).unwrap();
 
-//         let base = dir.path().to_str().unwrap();
-//         let roller = FixedWindowRoller::builder()
-//             .build(&format!("{}/$ENV{{LOG_DIR}}/foo.log.{{}}", base), 2)
-//             .unwrap();
+    //     roller.roll(&file).unwrap();
+    //     wait_for_roller(&roller);
 
-//         let file = dir.path().join("foo.log");
-//         File::create(&file).unwrap().write_all(fcontent).unwrap();
+    //     assert!(Command::new("gunzip")
+    //         .arg(dir.path().join("0.gz"))
+    //         .status()
+    //         .unwrap()
+    //         .success());
 
-//         //Check file exists before roll is called
-//         assert!(file.exists());
+    //     let mut file = File::open(dir.path().join("0")).unwrap();
+    //     let mut actual = vec![];
+    //     file.read_to_end(&mut actual).unwrap();
 
-//         roller.roll(&file).unwrap();
-//         wait_for_roller(&roller);
+    //     assert_eq!(contents, actual);
+    // }
 
-//         //Check file does not exists after roll is called
-//         assert!(!file.exists());
+    // #[test]
+    // fn roll_with_env_var() {
+    //     std::env::set_var("LOG_DIR", "test_log_dir");
+    //     let fcontent = b"file1";
+    //     let dir = tempfile::tempdir().unwrap();
 
-//         let rolled_file = dir.path().join("test_log_dir").join("foo.log.0");
-//         //Check the new rolled file exists
-//         assert!(rolled_file.exists());
+    //     let base = dir.path().to_str().unwrap();
+    //     let roller = FixedWindowRoller::builder()
+    //         .build(&format!("{}/$ENV{{LOG_DIR}}/foo.log.{{}}", base), 2)
+    //         .unwrap();
 
-//         let mut contents = vec![];
+    //     let file = dir.path().join("foo.log");
+    //     File::create(&file).unwrap().write_all(fcontent).unwrap();
 
-//         File::open(rolled_file)
-//             .unwrap()
-//             .read_to_end(&mut contents)
-//             .unwrap();
-//         //Check the new rolled file has the same contents as the old one
-//         assert_eq!(contents, fcontent);
-//     }
-// }
+    //     //Check file exists before roll is called
+    //     assert!(file.exists());
+
+    //     roller.roll(&file).unwrap();
+    //     wait_for_roller(&roller);
+
+    //     //Check file does not exists after roll is called
+    //     assert!(!file.exists());
+
+    //     let rolled_file = dir.path().join("test_log_dir").join("foo.log.0");
+    //     //Check the new rolled file exists
+    //     assert!(rolled_file.exists());
+
+    //     let mut contents = vec![];
+
+    //     File::open(rolled_file)
+    //         .unwrap()
+    //         .read_to_end(&mut contents)
+    //         .unwrap();
+    //     //Check the new rolled file has the same contents as the old one
+    //     assert_eq!(contents, fcontent);
+    // }
+}
