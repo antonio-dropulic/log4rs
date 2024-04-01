@@ -42,6 +42,8 @@ use crate::config::{Deserialize, Deserializers};
 #[cfg(feature = "config_parsing")]
 use crate::encode::EncoderConfig;
 
+use super::env_util;
+
 pub mod policy;
 pub(crate) mod util;
 
@@ -124,29 +126,31 @@ struct RolledLogPath {
     file_name: String,
     count: u32,
     // indices of current count ocurrences. Used to increment the log file count. refering to file name.
-    count_idx: Vec<usize>,
+    count_idxs: Vec<usize>,
 }
 
 impl RolledLogPath {
-    /// Create a new rolled log path
-    pub fn new(log: &LogFile, count: u32) -> anyhow::Result<Self> {
-        // TODO: What about expand env vars?
-        let (count_idx, file_name) = util::replace_count(log.pattern(), COUNT_PATTERN, count);
+    /// Create a new rolled log path. Does env var, timestamp, and count replacement
+    /// based on the [ENV_PATTERN], [TIME_PATTERN] and [COUNT_PATTERN]. Keeps an internal structure
+    /// that allows it to increment count occurences in the path.
+    pub fn new(file_name_pattern: &str, timestamp: &str, count: u32) -> Self {
+        let file_name_pattern = file_name_pattern.replace(TIME_PATTERN, timestamp);
+        let (count_idxs, file_name) = util::replace_count(&file_name_pattern, COUNT_PATTERN, count);
 
-        Ok(Self {
+        Self {
             count,
-            count_idx,
+            count_idxs,
             file_name,
-        })
+        }
     }
 
     pub fn increment_count(&self) -> Self {
-        let (count_idx, file_name) =
-            util::increment_count(self.file_name.clone(), self.count, &self.count_idx);
+        let (count_idxs, file_name) =
+            util::increment_count(self.file_name.clone(), self.count, &self.count_idxs);
         Self {
             file_name,
             count: self.count + 1,
-            count_idx,
+            count_idxs,
         }
     }
 
@@ -155,34 +159,39 @@ impl RolledLogPath {
     }
 }
 
-/// Active log file. Keeps an instance of a [LogWriter] allowing writes to the
-/// active log file. During it's lifetime [LogFile] can point to many different
-/// files.
-/// The lifetime of any specific log file is controled with
-/// [Self::close_writer] and [Self::get_or_init_writer].
+/// Active log file. You can write to the log file with [Self::get_or_init_writer].
+/// When rolling the file you must close the writer with [Self::close_writer].
+/// When re-opening the writer the file path may change. For more information see [Self::new].
 pub struct LogFile {
     /// Writer to the active log file
     writer: Option<LogWriter>,
     /// Active log file path. If [Self::writer] is closed, it
     /// is the path of the last active log file.
     path: PathBuf,
+    created_on: String,
+
+    // Reinitialization fields
     /// Pattern with [COUNT_PATTERN] in [Self::path]
     pattern: String,
+    base_count: u32,
+    append: bool,
 }
 
 impl LogFile {
     /// Create a new log file.
     ///
     /// `append` controls if the file is opened in append mode.
-    /// `pattern` and `count` are used to create the log file path: [Self::path]
-    fn new(append: bool, appender_pattern: &str, base_count: u32) -> anyhow::Result<Self> {
-        // TODO: expand env vars?
-        let roller_pattern = appender_pattern.replace(
-            TIME_PATTERN,
-            &chrono::Utc::now().format(DATE_FORMAT_STR).to_string(),
-        );
+    /// `pattern` and `count` are used to create the log file path: [Self::path].
+    /// If the `pattern` contains [TIME_PATTERN], [chrono::Utc::now] is used to inject
+    /// the timestamp.
+    fn new(append: bool, time_count_pattern: &str, base_count: u32) -> anyhow::Result<Self> {
+        let created_on = chrono::Utc::now().format(DATE_FORMAT_STR).to_string();
 
-        let file_name = roller_pattern.replace(COUNT_PATTERN, &base_count.to_string());
+        // TODO: better names for appender pattern / roller pattern
+        // TODO: expand env vars?
+        let count_pattern = time_count_pattern.replace(TIME_PATTERN, &created_on);
+
+        let file_name = count_pattern.replace(COUNT_PATTERN, &base_count.to_string());
 
         let path = PathBuf::from_str(&file_name)
             .context(format!("Invalid log file path: {}", file_name))?;
@@ -208,7 +217,10 @@ impl LogFile {
                 len,
             }),
             path,
-            pattern: roller_pattern,
+            created_on,
+            pattern: count_pattern,
+            base_count,
+            append,
         })
     }
 
@@ -223,17 +235,14 @@ impl LogFile {
     }
 
     /// Allows writing to the log file. Opens a new writer if the log was rolled
-    /// and the writer was closed.
-    fn get_or_init_writer(
-        &mut self,
-        append: bool,
-        appender_pattern: &str,
-        base_count: u32,
-    ) -> anyhow::Result<&mut LogWriter> {
+    /// and the writer was closed. A new file may be opened if [Self::pattern]
+    /// evaluation leads to a new file name. This is most commonly the case
+    /// if [Self::pattern] contains [TIME_PATTERN]
+    fn get_or_init_writer(&mut self) -> anyhow::Result<&mut LogWriter> {
         match self.writer {
             Some(ref mut writer) => Ok(writer),
             None => {
-                *self = Self::new(append, appender_pattern, base_count)?;
+                *self = Self::new(self.append, &self.pattern, self.base_count)?;
                 // SAFETY: new must create a writer
                 Ok(self.writer.as_mut().unwrap())
             }
@@ -243,11 +252,6 @@ impl LogFile {
     /// Returns the path to the log file.
     pub fn path(&self) -> &Path {
         &self.path
-    }
-
-    /// Pattern with [COUNT_PATTERN] used to build [Self::path]
-    pub fn pattern(&self) -> &str {
-        &self.pattern
     }
 
     /// Returns an estimate of the log file's current size.
@@ -271,6 +275,10 @@ impl LogFile {
     pub fn len_estimate(&self) -> u64 {
         self.writer.as_ref().map(|writer| writer.len).unwrap_or(0)
     }
+
+    fn created_on(&self) -> &str {
+        &self.created_on
+    }
 }
 
 /// An appender which archives log files in a configurable strategy.
@@ -279,17 +287,8 @@ impl LogFile {
 pub struct RollingFileAppender {
     #[derivative(Debug = "ignore")]
     log_file: Mutex<LogFile>,
-    append: bool,
     encoder: Box<dyn Encode>,
-    // TODO: for policy to take mut self
-    // The appender also needs to be mut
     policy: Box<dyn policy::Policy>,
-    // TODO: cleannup doc
-    // pattern that contains both time and count
-    // time is used when creating a new log file
-    // count is used when rolling a log file
-    appender_pattern: String,
-    base_count: u32,
 }
 
 impl Append for RollingFileAppender {
@@ -301,25 +300,15 @@ impl Append for RollingFileAppender {
         if is_pre_process {
             // TODO(eas): Idea: make this optionally return a future, and if so, we initialize a queue for
             // data that comes in while we are processing the file rotation.
-
             self.policy.process(&mut log_file)?;
 
-            // Create a new log writer if the log was rolled
-            let log_writer = log_file.get_or_init_writer(
-                self.append,
-                &self.appender_pattern,
-                self.base_count,
-            )?;
+            let log_writer = log_file.get_or_init_writer()?;
 
             self.encoder.encode(log_writer, record)?;
             log_writer.flush()?;
         } else {
             // Create a new log writter if the log was rolled
-            let log_writer = log_file.get_or_init_writer(
-                self.append,
-                &self.appender_pattern,
-                self.base_count,
-            )?;
+            let log_writer = log_file.get_or_init_writer()?;
 
             self.encoder.encode(log_writer, record)?;
             log_writer.flush()?;
@@ -384,40 +373,21 @@ impl RollingFileAppenderBuilder {
     /// $ENV{name_here} will NOT be replaced in the path.
     pub fn build(
         self,
-        //TODO: better doc path pattern, but be convertible to a real path
         appender_pattern: String,
-        // TODO: time format?
         policy: Box<dyn policy::Policy>,
     ) -> anyhow::Result<RollingFileAppender> {
-        let appender_pattern =
-            super::env_util::expand_env_vars(appender_pattern.clone()).to_string();
+        let pattern = env_util::expand_env_vars(appender_pattern.clone()).to_string();
 
         let appender = RollingFileAppender {
-            log_file: Mutex::new(LogFile::new(
-                self.append,
-                &appender_pattern,
-                self.base_count,
-            )?),
-            append: self.append,
+            log_file: Mutex::new(LogFile::new(self.append, &pattern, self.base_count)?),
             encoder: self
                 .encoder
                 .unwrap_or_else(|| Box::<PatternEncoder>::default()),
             policy,
-            appender_pattern,
-            base_count: self.base_count,
         };
 
-        let mut log_file_guard = appender.log_file.lock();
-
-        // TODO: No need to create a writer here?
-        // TODO: check after tests in place. Should be safe to remove
-        log_file_guard.get_or_init_writer(
-            appender.append,
-            &appender.appender_pattern,
-            appender.base_count,
-        )?;
-
-        drop(log_file_guard);
+        // open the file immediately
+        appender.log_file.lock().get_or_init_writer()?;
 
         Ok(appender)
     }

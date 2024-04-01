@@ -356,6 +356,9 @@ mod test {
             writer: None,
             path: PathBuf::new(),
             pattern: String::new(),
+            created_on: String::new(),
+            base_count: 0,
+            append: true,
         };
 
         let config = TimeTriggerConfig {

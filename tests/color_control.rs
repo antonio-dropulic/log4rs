@@ -1,30 +1,20 @@
-use std::{fmt::format, process::Command, sync::OnceLock, thread, time::Duration};
+use std::{process::Command, sync::OnceLock, thread, time::Duration};
 
 use log::info;
 use log4rs::{
-    append::{
-        console::ConsoleAppender,
-        rolling_file::{
-            policy::{
-                compound::{
-                    roll::fixed_window::{Compression, FixedWindowRoller},
-                    trigger::{
-                        size::SizeTrigger,
-                        time::{TimeTrigger, TimeTriggerConfig, TimeTriggerInterval},
-                        Trigger,
-                    },
-                    CompoundPolicy,
-                },
-                Policy,
+    append::rolling_file::{
+        policy::compound::{
+            roll::fixed_window::FixedWindowRoller,
+            trigger::{
+                size::SizeTrigger,
+                time::{TimeTrigger, TimeTriggerConfig, TimeTriggerInterval},
             },
-            RollingFileAppender,
+            CompoundPolicy,
         },
+        RollingFileAppender,
     },
-    config::{
-        runtime::{ConfigBuilder, RootBuilder},
-        Appender, Root,
-    },
-    Config, Handle,
+    config::{Appender, Root},
+    Config,
 };
 
 fn execute_test(env_key: &str, env_val: &str) {
@@ -58,22 +48,22 @@ static HANDLE: OnceLock<log4rs::Handle> = OnceLock::new();
 #[test]
 #[ignore = "manual"]
 fn rolling_log_with_size_trigger() {
+    let pattern = format!("test_logs/log-name-{}-{}.log", "{TIME}", "{}");
+
     let max_log_count = 5;
     let roller = FixedWindowRoller::builder()
         .base(1)
-        .build(Compression::None, max_log_count)
+        .build(pattern.clone(), max_log_count)
         .unwrap();
 
     // every entry should be a new log
     let trigger = SizeTrigger::new(1);
     let roll_policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
 
-    let appender_pattern = format!("test_logs/log-name-{}-{}.log", "{TIME}", "{}");
-
     let appender = RollingFileAppender::builder()
         .append(false)
         .base(0)
-        .build(appender_pattern, Box::new(roll_policy))
+        .build(pattern, Box::new(roll_policy))
         .unwrap();
 
     let cfg = Config::builder();
@@ -98,6 +88,7 @@ fn rolling_log_with_size_trigger() {
     // TODO: how do i get this to show up in the log files
     for i in 0..5 {
         info!("LOG NUMBER {i}");
+        // sleep to notice the differences in timestamps
         thread::sleep(Duration::from_secs(1));
     }
 }
@@ -105,12 +96,12 @@ fn rolling_log_with_size_trigger() {
 #[test]
 #[ignore = "manual"]
 fn rolling_log_with_time_trigger() {
-    // Time trigger doesn't get rolled on program end. Thats fine
+    let appender_pattern = format!("test_logs/log-name-{}-{}.log", "{TIME}", "{}");
 
     let max_log_count = 5;
     let roller = FixedWindowRoller::builder()
         .base(1)
-        .build(Compression::None, max_log_count)
+        .build(appender_pattern.clone(), max_log_count)
         .unwrap();
 
     // new log entry every sec
@@ -121,8 +112,6 @@ fn rolling_log_with_time_trigger() {
     });
 
     let roll_policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
-
-    let appender_pattern = format!("test_logs/log-name-{}-{}.log", "{TIME}", "{}");
 
     let appender = RollingFileAppender::builder()
         .append(false)
