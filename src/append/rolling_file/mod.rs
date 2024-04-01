@@ -45,7 +45,6 @@ use crate::encode::EncoderConfig;
 use super::env_util;
 
 pub mod policy;
-pub(crate) mod util;
 
 /// Pattern used to replace DateTime in the logfile path
 pub const TIME_PATTERN: &str = "{TIME}";
@@ -116,47 +115,6 @@ impl encode::Write for LogWriter {}
 
 impl LogWriter {
     const BUFFER_CAPACITY: usize = 1024;
-}
-
-// TODO: move to fixed window roller
-/// Rolled log path
-#[derive(Debug, Clone)]
-struct RolledLogPath {
-    /// Count of the log file, present in the file path. [COUNT_PATTERN] replacement.
-    file_name: String,
-    count: u32,
-    // indices of current count ocurrences. Used to increment the log file count. refering to file name.
-    count_idxs: Vec<usize>,
-}
-
-impl RolledLogPath {
-    /// Create a new rolled log path. Does env var, timestamp, and count replacement
-    /// based on the [ENV_PATTERN], [TIME_PATTERN] and [COUNT_PATTERN]. Keeps an internal structure
-    /// that allows it to increment count occurences in the path.
-    pub fn new(file_name_pattern: &str, timestamp: &str, count: u32) -> Self {
-        let file_name_pattern = file_name_pattern.replace(TIME_PATTERN, timestamp);
-        let (count_idxs, file_name) = util::replace_count(&file_name_pattern, COUNT_PATTERN, count);
-
-        Self {
-            count,
-            count_idxs,
-            file_name,
-        }
-    }
-
-    pub fn increment_count(&self) -> Self {
-        let (count_idxs, file_name) =
-            util::increment_count(self.file_name.clone(), self.count, &self.count_idxs);
-        Self {
-            file_name,
-            count: self.count + 1,
-            count_idxs,
-        }
-    }
-
-    pub fn path(&self) -> &Path {
-        Path::new(&self.file_name)
-    }
 }
 
 /// Active log file. You can write to the log file with [Self::get_or_init_writer].
