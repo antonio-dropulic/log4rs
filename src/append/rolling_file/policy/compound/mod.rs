@@ -102,10 +102,11 @@ impl CompoundPolicy {
 impl Policy for CompoundPolicy {
     fn process(&self, log: &mut LogFile) -> anyhow::Result<()> {
         if self.trigger.trigger(log)? {
-            log.roll();
-            self.roller.roll(log.path())?;
+            log.close_writer();
+            self.roller.roll(log)
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     fn is_pre_process(&self) -> bool {

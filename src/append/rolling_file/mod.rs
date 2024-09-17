@@ -16,6 +16,7 @@
 //!
 //! Requires the `rolling_file_appender` feature.
 
+use anyhow::Context;
 use derivative::Derivative;
 use log::Record;
 use parking_lot::Mutex;
@@ -23,6 +24,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 #[cfg(feature = "config_parsing")]
@@ -40,7 +42,16 @@ use crate::config::{Deserialize, Deserializers};
 #[cfg(feature = "config_parsing")]
 use crate::encode::EncoderConfig;
 
+use super::env_util;
+
 pub mod policy;
+
+/// Pattern used to replace DateTime in the logfile path
+pub const TIME_PATTERN: &str = "{TIME}";
+/// Pattern used to replace rolling log count
+pub const COUNT_PATTERN: &str = "{}";
+// TODO: USER SHOULD INJECT DATE FORMAT OR ATLEAST SELECT IT
+const DATE_FORMAT_STR: &str = "%Y-%m-%d-%H:%M:%S";
 
 /// Configuration for the rolling file appender.
 #[cfg(feature = "config_parsing")]
@@ -80,6 +91,7 @@ impl<'de> serde::Deserialize<'de> for Policy {
     }
 }
 
+// TODO: log file helper. no need to be visible
 #[derive(Debug)]
 struct LogWriter {
     file: BufWriter<File>,
@@ -101,19 +113,103 @@ impl io::Write for LogWriter {
 
 impl encode::Write for LogWriter {}
 
-/// Information about the active log file.
-#[derive(Debug)]
-pub struct LogFile<'a> {
-    writer: &'a mut Option<LogWriter>,
-    path: &'a Path,
-    len: u64,
+impl LogWriter {
+    const BUFFER_CAPACITY: usize = 1024;
 }
 
-#[allow(clippy::len_without_is_empty)]
-impl<'a> LogFile<'a> {
+/// Active log file. You can write to the log file with [Self::get_or_init_writer].
+/// When rolling the file you must close the writer with [Self::close_writer].
+/// When re-opening the writer the file path may change. For more information see [Self::new].
+pub struct LogFile {
+    /// Writer to the active log file
+    writer: Option<LogWriter>,
+    /// Active log file path. If [Self::writer] is closed, it
+    /// is the path of the last active log file.
+    path: PathBuf,
+    created_on: String,
+
+    // Reinitialization fields
+    /// Pattern with [COUNT_PATTERN] in [Self::path]
+    pattern: String,
+    base_count: u32,
+    append: bool,
+}
+
+impl LogFile {
+    /// Create a new log file.
+    ///
+    /// `append` controls if the file is opened in append mode.
+    /// `pattern` and `count` are used to create the log file path: [Self::path].
+    /// If the `pattern` contains [TIME_PATTERN], [chrono::Utc::now] is used to inject
+    /// the timestamp.
+    fn new(append: bool, time_count_pattern: &str, base_count: u32) -> anyhow::Result<Self> {
+        let created_on = chrono::Utc::now().format(DATE_FORMAT_STR).to_string();
+
+        // TODO: better names for appender pattern / roller pattern
+        // TODO: expand env vars?
+        let count_pattern = time_count_pattern.replace(TIME_PATTERN, &created_on);
+
+        let file_name = count_pattern.replace(COUNT_PATTERN, &base_count.to_string());
+
+        let path = PathBuf::from_str(&file_name)
+            .context(format!("Invalid log file path: {}", file_name))?;
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .context(format!("Cant create log file parent: {}", file_name))?;
+        }
+
+        let file = OpenOptions::new()
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .create(true)
+            .open(&path)
+            .context(format!("Can't open log file {}", file_name))?;
+
+        let len = if append { file.metadata()?.len() } else { 0 };
+
+        Ok(LogFile {
+            writer: Some(LogWriter {
+                file: BufWriter::with_capacity(LogWriter::BUFFER_CAPACITY, file),
+                len,
+            }),
+            path,
+            created_on,
+            pattern: count_pattern,
+            base_count,
+            append,
+        })
+    }
+
+    /// A policy must call this method when it wishes to roll the log. The
+    /// appender's handle to the file will be closed, which is necessary to
+    /// move or delete the file on Windows.
+    ///
+    /// If this method is called, the log file must no longer be present on
+    /// disk when the policy returns.
+    pub fn close_writer(&mut self) {
+        self.writer = None;
+    }
+
+    /// Allows writing to the log file. Opens a new writer if the log was rolled
+    /// and the writer was closed. A new file may be opened if [Self::pattern]
+    /// evaluation leads to a new file name. This is most commonly the case
+    /// if [Self::pattern] contains [TIME_PATTERN]
+    fn get_or_init_writer(&mut self) -> anyhow::Result<&mut LogWriter> {
+        match self.writer {
+            Some(ref mut writer) => Ok(writer),
+            None => {
+                *self = Self::new(self.append, &self.pattern, self.base_count)?;
+                // SAFETY: new must create a writer
+                Ok(self.writer.as_mut().unwrap())
+            }
+        }
+    }
+
     /// Returns the path to the log file.
     pub fn path(&self) -> &Path {
-        self.path
+        &self.path
     }
 
     /// Returns an estimate of the log file's current size.
@@ -122,9 +218,10 @@ impl<'a> LogFile<'a> {
     /// and adding the number of bytes written. It may be inaccurate if any
     /// writes have failed or if another process has modified the file
     /// concurrently.
+    #[allow(clippy::len_without_is_empty)]
     #[deprecated(since = "0.9.1", note = "Please use the len_estimate function instead")]
     pub fn len(&self) -> u64 {
-        self.len
+        self.writer.as_ref().map(|writer| writer.len).unwrap_or(0)
     }
 
     /// Returns an estimate of the log file's current size.
@@ -134,19 +231,11 @@ impl<'a> LogFile<'a> {
     /// writes have failed or if another process has modified the file
     /// concurrently.
     pub fn len_estimate(&self) -> u64 {
-        self.len
+        self.writer.as_ref().map(|writer| writer.len).unwrap_or(0)
     }
 
-    /// Triggers the log file to roll over.
-    ///
-    /// A policy must call this method when it wishes to roll the log. The
-    /// appender's handle to the file will be closed, which is necessary to
-    /// move or delete the file on Windows.
-    ///
-    /// If this method is called, the log file must no longer be present on
-    /// disk when the policy returns.
-    pub fn roll(&mut self) {
-        *self.writer = None;
+    fn created_on(&self) -> &str {
+        &self.created_on
     }
 }
 
@@ -155,9 +244,7 @@ impl<'a> LogFile<'a> {
 #[derivative(Debug)]
 pub struct RollingFileAppender {
     #[derivative(Debug = "ignore")]
-    writer: Mutex<Option<LogWriter>>,
-    path: PathBuf,
-    append: bool,
+    log_file: Mutex<LogFile>,
     encoder: Box<dyn Encode>,
     policy: Box<dyn policy::Policy>,
 }
@@ -165,40 +252,27 @@ pub struct RollingFileAppender {
 impl Append for RollingFileAppender {
     fn append(&self, record: &Record) -> anyhow::Result<()> {
         // TODO(eas): Perhaps this is better as a concurrent queue?
-        let mut writer = self.writer.lock();
+        let mut log_file = self.log_file.lock();
 
         let is_pre_process = self.policy.is_pre_process();
-        let log_writer = self.get_writer(&mut writer)?;
-
         if is_pre_process {
-            let len = log_writer.len;
-
-            let mut file = LogFile {
-                writer: &mut writer,
-                path: &self.path,
-                len,
-            };
-
             // TODO(eas): Idea: make this optionally return a future, and if so, we initialize a queue for
             // data that comes in while we are processing the file rotation.
+            self.policy.process(&mut log_file)?;
 
-            self.policy.process(&mut file)?;
+            let log_writer = log_file.get_or_init_writer()?;
 
-            let log_writer_new = self.get_writer(&mut writer)?;
-            self.encoder.encode(log_writer_new, record)?;
-            log_writer_new.flush()?;
-        } else {
             self.encoder.encode(log_writer, record)?;
             log_writer.flush()?;
-            let len = log_writer.len;
+        } else {
+            // Create a new log writter if the log was rolled
+            let log_writer = log_file.get_or_init_writer()?;
 
-            let mut file = LogFile {
-                writer: &mut writer,
-                path: &self.path,
-                len,
-            };
+            self.encoder.encode(log_writer, record)?;
+            log_writer.flush()?;
 
-            self.policy.process(&mut file)?;
+            // roll after writing
+            self.policy.process(&mut log_file)?;
         }
 
         Ok(())
@@ -213,30 +287,8 @@ impl RollingFileAppender {
         RollingFileAppenderBuilder {
             append: true,
             encoder: None,
+            base_count: 0,
         }
-    }
-
-    fn get_writer<'a>(&self, writer: &'a mut Option<LogWriter>) -> io::Result<&'a mut LogWriter> {
-        if writer.is_none() {
-            let file = OpenOptions::new()
-                .write(true)
-                .append(self.append)
-                .truncate(!self.append)
-                .create(true)
-                .open(&self.path)?;
-            let len = if self.append {
-                file.metadata()?.len()
-            } else {
-                0
-            };
-            *writer = Some(LogWriter {
-                file: BufWriter::with_capacity(1024, file),
-                len,
-            });
-        }
-
-        // :( unwrap
-        Ok(writer.as_mut().unwrap())
     }
 }
 
@@ -244,6 +296,7 @@ impl RollingFileAppender {
 pub struct RollingFileAppenderBuilder {
     append: bool,
     encoder: Option<Box<dyn Encode>>,
+    base_count: u32,
 }
 
 impl RollingFileAppenderBuilder {
@@ -263,36 +316,36 @@ impl RollingFileAppenderBuilder {
         self
     }
 
+    /// Value used to replace [COUNT_PATTERN] in the file path.
+    ///
+    /// Defaults to 0.
+    pub fn base(mut self, base_count: u32) -> RollingFileAppenderBuilder {
+        self.base_count = base_count;
+        self
+    }
+
     /// Constructs a `RollingFileAppender`.
     /// The path argument can contain environment variables of the form $ENV{name_here},
     /// where 'name_here' will be the name of the environment variable that
     /// will be resolved. Note that if the variable fails to resolve,
     /// $ENV{name_here} will NOT be replaced in the path.
-    pub fn build<P>(
+    pub fn build(
         self,
-        path: P,
+        appender_pattern: String,
         policy: Box<dyn policy::Policy>,
-    ) -> io::Result<RollingFileAppender>
-    where
-        P: AsRef<Path>,
-    {
-        let path = super::env_util::expand_env_vars(path.as_ref().to_string_lossy());
+    ) -> anyhow::Result<RollingFileAppender> {
+        let pattern = env_util::expand_env_vars(appender_pattern.clone()).to_string();
+
         let appender = RollingFileAppender {
-            writer: Mutex::new(None),
-            path: path.as_ref().into(),
-            append: self.append,
+            log_file: Mutex::new(LogFile::new(self.append, &pattern, self.base_count)?),
             encoder: self
                 .encoder
                 .unwrap_or_else(|| Box::<PatternEncoder>::default()),
             policy,
         };
 
-        if let Some(parent) = appender.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // open the log file immediately
-        appender.get_writer(&mut appender.writer.lock())?;
+        // open the file immediately
+        appender.log_file.lock().get_or_init_writer()?;
 
         Ok(appender)
     }
@@ -360,6 +413,7 @@ impl Deserialize for RollingFileAppenderDeserializer {
         }
 
         let policy = deserializers.deserialize(&config.policy.kind, config.policy.config)?;
+        // TODO: Extend appender config
         let appender = builder.build(config.path, policy)?;
         Ok(Box::new(appender))
     }
@@ -433,16 +487,18 @@ appenders:
     fn append() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("append.log");
+        let pattern = path.to_str().unwrap().to_string();
+
         RollingFileAppender::builder()
             .append(true)
-            .build(&path, Box::new(NopPolicy))
+            .build(pattern.clone(), Box::new(NopPolicy))
             .unwrap();
         assert!(path.exists());
         File::create(&path).unwrap().write_all(b"hello").unwrap();
 
         RollingFileAppender::builder()
             .append(true)
-            .build(&path, Box::new(NopPolicy))
+            .build(pattern.clone(), Box::new(NopPolicy))
             .unwrap();
         let mut contents = vec![];
         File::open(&path)
@@ -456,16 +512,18 @@ appenders:
     fn truncate() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("truncate.log");
+        let pattern = path.to_str().unwrap().to_string();
+
         RollingFileAppender::builder()
             .append(false)
-            .build(&path, Box::new(NopPolicy))
+            .build(pattern.clone(), Box::new(NopPolicy))
             .unwrap();
         assert!(path.exists());
         File::create(&path).unwrap().write_all(b"hello").unwrap();
 
         RollingFileAppender::builder()
             .append(false)
-            .build(&path, Box::new(NopPolicy))
+            .build(pattern.clone(), Box::new(NopPolicy))
             .unwrap();
         let mut contents = vec![];
         File::open(&path)

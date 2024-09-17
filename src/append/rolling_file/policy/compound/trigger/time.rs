@@ -10,6 +10,7 @@ use mock_instant::{SystemTime, UNIX_EPOCH};
 use rand::Rng;
 #[cfg(feature = "config_parsing")]
 use serde::de;
+use serde::Serialize;
 #[cfg(feature = "config_parsing")]
 use std::fmt;
 use std::sync::RwLock;
@@ -23,20 +24,23 @@ use crate::config::{Deserialize, Deserializers};
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimeTriggerConfig {
-    interval: TimeTriggerInterval,
+    /// Trigger interval
+    pub interval: TimeTriggerInterval,
     #[serde(default)]
-    modulate: bool,
+    /// TODO:
+    pub modulate: bool,
     #[serde(default)]
-    max_random_delay: u64,
+    /// TODO:
+    pub max_random_delay: u64,
 }
 
 #[cfg(not(feature = "config_parsing"))]
 /// Configuration for the time trigger.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
 pub struct TimeTriggerConfig {
-    interval: TimeTriggerInterval,
-    modulate: bool,
-    max_random_delay: u64,
+    pub interval: TimeTriggerInterval,
+    pub modulate: bool,
+    pub max_random_delay: u64,
 }
 
 /// A trigger which rolls the log once it has passed a certain time.
@@ -49,7 +53,7 @@ pub struct TimeTrigger {
 /// The TimeTrigger supports the following units (case insensitive):
 /// "second", "seconds", "minute", "minutes", "hour", "hours", "day", "days", "week", "weeks", "month", "months", "year", "years". The unit defaults to
 /// second if not specified.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize)]
 pub enum TimeTriggerInterval {
     /// TimeTriger in second(s).
     Second(i64),
@@ -341,18 +345,20 @@ impl Deserialize for TimeTriggerDeserializer {
 mod test {
     use super::*;
     use mock_instant::MockClock;
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
     fn trigger_with_time_and_modulate(
         interval: TimeTriggerInterval,
         modulate: bool,
         millis: u64,
     ) -> (bool, bool) {
-        let file = tempfile::tempdir().unwrap();
         let logfile = LogFile {
-            writer: &mut None,
-            path: file.path(),
-            len: 0,
+            writer: None,
+            path: PathBuf::new(),
+            pattern: String::new(),
+            created_on: String::new(),
+            base_count: 0,
+            append: true,
         };
 
         let config = TimeTriggerConfig {
